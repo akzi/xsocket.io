@@ -27,7 +27,13 @@
     <ClInclude Include="..\include\detail\detail.hpp">
       <Filter>头文件\detail</Filter>
     </ClInclude>
+    <ClInclude Include="..\include\xserver.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="..\include\session.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\request.hpp">
       <Filter>头文件\detail</Filter>
     </ClInclude>
   </ItemGroup>
