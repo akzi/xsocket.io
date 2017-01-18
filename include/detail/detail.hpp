@@ -2,6 +2,8 @@
 #include <map>
 #include <functional>
 #include <string>
-#include "../../xwebsocket/include/websocket.hpp"
-#include "../../xhttper/include/query.hpp"
+#include <fstream>
+#include "../../../xwebsocket/include/websocket.hpp"
+#include "../../../xhttper/include/query.hpp"
+#include "../../../xjson/include/xjson.hpp"
 #include "protoc.hpp"
