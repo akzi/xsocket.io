@@ -6,4 +6,6 @@
 #include "../../../xwebsocket/include/websocket.hpp"
 #include "../../../xhttper/include/query.hpp"
 #include "../../../xjson/include/xjson.hpp"
+#include "../../../xcoroutine/include/xcoroutine.hpp"
+#include "../../../xutil/include/vfs.hpp"
 #include "protoc.hpp"

@@ -33,8 +33,8 @@
     <ClInclude Include="..\include\session.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="..\include\request.hpp">
-      <Filter>头文件</Filter>
+    <ClInclude Include="..\include\polling.hpp">
+      <Filter>头文件\detail</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

@@ -4,21 +4,14 @@ namespace xsocket_io
 	class session
 	{
 	public:
-		session()
+		session(xnet::proactor_pool &ppool, xnet::connection &&conn)
+			:pro_pool_(ppool),
+			polling_(std::move(conn))
 		{
-
-		}
-		session(session &&sess)
-		{
-			reset_move(std::move(sess));
-		}
-		session &operator = (session &&sess)
-		{
-			reset_move(std::move(sess));
-			return *this;
+			init();
 		}
 		template<typename ...Args>
-		void on(const std::string &event_name, std::function<void(Args &&)> &&handle)
+		void on(const std::string &event_name, std::function<void(Args &&...)> &&handle)
 		{
 			regist_event(event_name, std::move(handle));
 		}
@@ -26,31 +19,73 @@ namespace xsocket_io
 		template<typename T>
 		void emit(const std::string &event_name,const T &msg)
 		{
-			std::string data = detail::packet_msg(event_name, msg);
-			ws_sess_.send_text(data);
+
+		}
+		std::string get_sid()
+		{
+			return sid_;
 		}
 	private:
+		session(session &&sess) = delete;
+		session(session &sess) = delete;
+		session &operator = (session &&sess) = delete;
+		session &operator = (session &sess) = delete;
+
 		friend class xserver;
-		void reset_move(session &sess)
-		{
-			if (&sess == this)
-				return;
-			close_callbacks_ = std::move(sess.close_callbacks_);
-			event_handles_ = std::move(sess.event_handles_);
-			msg_ = std::move(sess.msg_);
-			session_id_ = sess.session_id_;
-			regist_session_ = std::move(sess.regist_session_);
-			sess.session_id_ = 0;
-			
-		}
-		void init()
-		{
-			regist_session_(*this);
-		}
-		void frame_callback(const std::string& data)
+
+		void on_heartbeat()
 		{
 
 		}
+		void on_packet(const detail::packet &_packet)
+		{
+
+		}
+		void handle_req()
+		{
+			
+		}
+		bool check_transport(const std::string &_transport)
+		{
+
+		}
+		bool check_sid(const std::string &sid)
+		{
+
+		}
+		bool check_static(const std::string &url, std::string &filepath)
+		{
+
+		}
+		std::size_t set_timer(uint32_t timeout, std::function<bool()>&& actions)
+		{
+
+		}
+		void del_timer(std::size_t timer_id)
+		{
+
+		}
+		std::vector<std::string> get_upgrades(const std::string &transport)
+		{
+
+		}
+		void init_polling()
+		{
+			polling_.on_heartbeat_ = [this](auto &&...args) {return on_heartbeat(std::forward<decltype(args)>(args)...); };
+			polling_.on_packet_ = [this](auto &&...args) {return on_packet(std::forward<decltype(args)>(args)...); };
+			polling_.check_sid_ = [this](auto &&...args) {return check_sid(std::forward<decltype(args)>(args)...); };
+			polling_.check_transport_ = [this](auto &&...args) {return check_transport(std::forward<decltype(args)>(args)...); };
+			polling_.check_static_ = [this](auto &&...args) {return check_static(std::forward<decltype(args)>(args)...); };
+			polling_.get_upgrades_ = [this](auto &&...args) {return get_upgrades(std::forward<decltype(args)>(args)...); };
+			polling_.set_timer_ = [this](auto &&...args) {return set_timer(std::forward<decltype(args)>(args)...); };
+			polling_.del_timer_ = [this](auto &&...args) {return del_timer(std::forward<decltype(args)>(args)...); };
+			polling_.handle_req_ = [this](auto &&...args) {return handle_req(std::forward<decltype(args)>(args)...); };
+		}
+		void init()
+		{
+			init_polling();
+		}
+
 		void regist_event(const std::string &event_name, std::function<void(std::string &&)> &&handle_)
 		{
 			std::function<void(std::string &&)> handle;
@@ -68,14 +103,13 @@ namespace xsocket_io
 				throw std::runtime_error("event");
 			event_handles_.emplace(event_name, std::move(handle));
 		}
-
-
-
+		xnet::proactor_pool &pro_pool_;
 		std::vector<std::function<void()>> close_callbacks_;
 		std::map<std::string, std::function<void()>> event_handles_;
-		std::function<void(session &)> regist_session_;
+		std::function<void(const std::string &, session*)> regist_session_;
 		xnet::connection conn_;
 		std::string msg_;
-		int64_t session_id_ = 0;
+		std::string sid_ ;
+		polling polling_;
 	};
 }

@@ -3,5 +3,5 @@
 
 int main()
 {
-
+	xsocket_io::xserver server;
 }
