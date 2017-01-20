@@ -47,27 +47,27 @@ namespace xsocket_io
 		}
 		bool check_transport(const std::string &_transport)
 		{
-
+			return check_transport_(_transport);
 		}
 		bool check_sid(const std::string &sid)
 		{
-
+			return check_sid_(sid);
 		}
 		bool check_static(const std::string &url, std::string &filepath)
 		{
-
+			return check_static_(url, filepath);
 		}
 		std::size_t set_timer(uint32_t timeout, std::function<bool()>&& actions)
 		{
-
+			return pro_pool_.set_timer(timeout, std::move(actions));
 		}
 		void del_timer(std::size_t timer_id)
 		{
-
+			pro_pool_.cancel_timer(timer_id);
 		}
 		std::vector<std::string> get_upgrades(const std::string &transport)
 		{
-
+			return get_upgrades_(transport);
 		}
 		void init_polling()
 		{
@@ -103,13 +103,18 @@ namespace xsocket_io
 				throw std::runtime_error("event");
 			event_handles_.emplace(event_name, std::move(handle));
 		}
+		bool upgrade_ = false;
 		xnet::proactor_pool &pro_pool_;
 		std::vector<std::function<void()>> close_callbacks_;
 		std::map<std::string, std::function<void()>> event_handles_;
 		std::function<void(const std::string &, session*)> regist_session_;
+		std::function<bool(const std::string &, std::string &)> check_static_;
+		std::function<bool(const std::string &)> check_sid_;
+		std::function<bool(const std::string &)> check_transport_;
+		std::function<std::vector<std::string>(const std::string &)> get_upgrades_;
 		xnet::connection conn_;
 		std::string msg_;
 		std::string sid_ ;
-		polling polling_;
+		detail::polling polling_;
 	};
 }

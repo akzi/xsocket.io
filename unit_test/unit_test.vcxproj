@@ -113,6 +113,8 @@
     <ClInclude Include="..\include\detail\detail.hpp" />
     <ClInclude Include="..\include\detail\protoc.hpp" />
     <ClInclude Include="..\include\polling.hpp" />
+    <ClInclude Include="..\include\request.hpp" />
+    <ClInclude Include="..\include\response.hpp" />
     <ClInclude Include="..\include\session.hpp" />
     <ClInclude Include="..\include\xserver.hpp" />
     <ClInclude Include="..\include\xsocket.io.hpp" />
