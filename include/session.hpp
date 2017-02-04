@@ -4,9 +4,8 @@ namespace xsocket_io
 	class session
 	{
 	public:
-		session(xnet::proactor_pool &ppool, xnet::connection &&conn)
-			:pro_pool_(ppool),
-			polling_(std::move(conn))
+		session(xnet::proactor_pool &ppool)
+			:pro_pool_(ppool)
 		{
 			init();
 		}
@@ -32,12 +31,23 @@ namespace xsocket_io
 		session &operator = (session &sess) = delete;
 
 		friend class xserver;
+		void attach_request(std::unique_ptr<request> req)
+		{
+			requests_.emplace_back(std::move(req));
+		}
+		void attach_polling()
+		{
 
+		}
 		void on_heartbeat()
 		{
 
 		}
 		void on_packet(const detail::packet &_packet)
+		{
+
+		}
+		void on_packet(const std::list<detail::packet> &_packet)
 		{
 
 		}
@@ -71,16 +81,18 @@ namespace xsocket_io
 		}
 		void init_polling()
 		{
-			polling_.on_heartbeat_ = [this](auto &&...args) {return on_heartbeat(std::forward<decltype(args)>(args)...); };
-			polling_.on_packet_ = [this](auto &&...args) {return on_packet(std::forward<decltype(args)>(args)...); };
-			polling_.check_sid_ = [this](auto &&...args) {return check_sid(std::forward<decltype(args)>(args)...); };
-			polling_.check_transport_ = [this](auto &&...args) {return check_transport(std::forward<decltype(args)>(args)...); };
-			polling_.check_static_ = [this](auto &&...args) {return check_static(std::forward<decltype(args)>(args)...); };
-			polling_.get_upgrades_ = [this](auto &&...args) {return get_upgrades(std::forward<decltype(args)>(args)...); };
-			polling_.set_timer_ = [this](auto &&...args) {return set_timer(std::forward<decltype(args)>(args)...); };
-			polling_.del_timer_ = [this](auto &&...args) {return del_timer(std::forward<decltype(args)>(args)...); };
-			polling_.handle_req_ = [this](auto &&...args) {return handle_req(std::forward<decltype(args)>(args)...); };
-			polling_.init();
+			polling_->on_heartbeat_ = [this](auto &&...args) {return on_heartbeat(std::forward<decltype(args)>(args)...); };
+			polling_->on_sid_= [this](auto &&...args) {return on_sid(std::forward<decltype(args)>(args)...); };
+			polling_->on_packet_ = [this](auto &&...args) {return on_packet(std::forward<decltype(args)>(args)...); };
+			polling_->check_sid_ = [this](auto &&...args) {return check_sid(std::forward<decltype(args)>(args)...); };
+			polling_->check_transport_ = [this](auto &&...args) {return check_transport(std::forward<decltype(args)>(args)...); };
+			polling_->check_static_ = [this](auto &&...args) {return check_static(std::forward<decltype(args)>(args)...); };
+			polling_->get_upgrades_ = [this](auto &&...args) {return get_upgrades(std::forward<decltype(args)>(args)...); };
+			polling_->set_timer_ = [this](auto &&...args) {return set_timer(std::forward<decltype(args)>(args)...); };
+			polling_->del_timer_ = [this](auto &&...args) {return del_timer(std::forward<decltype(args)>(args)...); };
+			polling_->handle_req_ = [this](auto &&...args) {return handle_req(std::forward<decltype(args)>(args)...); };
+			polling_->close_callback_ = [this](auto &&...args) {return on_close(std::forward<decltype(args)>(args)...); };
+			polling_->init();
 		}
 		void init()
 		{
@@ -106,12 +118,20 @@ namespace xsocket_io
 			event_handles_.emplace(event_name, std::move(handle));
 		}
 
+		void on_sid(const std::string &sid)
+		{
+			sid_ = sid;
+		}
+		void on_close()
+		{
+			close_callback_(this);
+		}
 
 		bool upgrade_ = false;
 		xnet::proactor_pool &pro_pool_;
-		std::vector<std::function<void()>> close_callbacks_;
+		std::function<void(session *)> close_callback_;
+		std::function<session &(const std::string &sid)> get_session_;
 		std::map<std::string, std::function<void()>> event_handles_;
-		std::function<void(const std::string &, session*)> regist_session_;
 		std::function<bool(const std::string &, std::string &)> check_static_;
 		std::function<bool(const std::string &)> check_sid_;
 		std::function<bool(const std::string &)> check_transport_;
@@ -119,6 +139,8 @@ namespace xsocket_io
 		xnet::connection conn_;
 		std::string msg_;
 		std::string sid_ ;
-		detail::polling polling_;
+		std::unique_ptr<detail::polling> polling_;
+		std::list<std::unique_ptr<request>> requests_;
+
 	};
 }

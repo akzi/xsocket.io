@@ -26,7 +26,7 @@ namespace xsocket_io
 		{
 			return path_;
 		}
-		xhttper::query get_query()
+		xhttper::query &get_query()
 		{
 			return query_;
 		}
@@ -108,6 +108,9 @@ namespace xsocket_io
 		}
 	private:
 		friend class detail::polling;
+		friend class xserver;
+		friend class session;
+
 		void do_send_file(const std::string &filepath)
 		{
 			std::cout << filepath << std::endl;
@@ -371,7 +374,8 @@ namespace xsocket_io
 		}
 		void on_close()
 		{
-
+			conn_.close();
+			close_callback_();
 		}
 
 		void init()
@@ -391,5 +395,6 @@ namespace xsocket_io
 		xhttper::query query_;
 		std::string body_;
 		std::function<void()> on_request_;
+		std::function<void()> close_callback_;
 	};
 }
