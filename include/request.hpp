@@ -44,7 +44,7 @@ namespace xsocket_io
 		{
 			return http_parser_.get_method();
 		}
-		
+
 		void send_file(const std::string &filepath)
 		{
 			if (!xutil::vfs::file_exists()(filepath))
@@ -58,7 +58,54 @@ namespace xsocket_io
 			send_buffers_.push_back(std::move(buffer));
 			flush();
 		}
-		
+		std::size_t content_length()
+		{
+			if (content_length_ == (std::size_t) - 1)
+			{
+				using strncasecmper = xutil::functional::strncasecmper;
+				std::string len = http_parser_.get_header<strncasecmper>("Content-Length");
+				if (len.empty())
+				{
+					content_length_ = 0;
+					return content_length_;
+				}
+				content_length_ = std::strtoul(len.c_str(), 0, 10);
+			}
+			return content_length_;
+		}
+		std::string body()
+		{
+			int i = 0;
+			body_ = http_parser_.get_string();
+			if (body_.size() == content_length())
+				return body_;
+			else
+			{
+				std::function<void()> resume_handle;
+				conn_.regist_recv_callback([&](char *data, std::size_t len)
+				{
+					if (len == 0)
+					{
+						conn_.close();
+						resume_handle();
+						return;
+					}
+					i++;
+					body_.append(data, len);
+					std::cout << body_ << std::endl;
+					if (body_.size() == content_length())
+					{
+						resume_handle();
+						return;
+					}
+					conn_.async_recv_some();
+				});
+				conn_.async_recv_some();
+				xcoroutine::yield(resume_handle);
+				init_recv_callback();
+			}
+			return body_;
+		}
 	private:
 		friend class detail::polling;
 		void do_send_file(const std::string &filepath)
@@ -254,7 +301,7 @@ namespace xsocket_io
 
 			return{ begin, std::stoull(range.c_str() + pos, 0, 10) };
 		}
-		void regist_recv_callback()
+		void init_recv_callback()
 		{
 			conn_.regist_recv_callback([this](char *data, std::size_t len) {
 				if (!len)
@@ -284,11 +331,17 @@ namespace xsocket_io
 			query_ = std::move(xhttper::query(args));
 			on_request();
 		}
+		void reset()
+		{
+			content_length_ = (std::size_t) - 1;
+			http_parser_.reset();
+			body_.clear();
+		}
 		void on_request()
 		{
 			xcoroutine::create([this] {
 				on_request_();
-				http_parser_.reset();
+				reset();
 				if(!is_close_)
 					conn_.async_recv_some();
 			});
@@ -323,10 +376,11 @@ namespace xsocket_io
 
 		void init()
 		{
-			regist_recv_callback();
+			init_recv_callback();
 			init_send_callback();
 			conn_.async_recv_some();
 		}
+		std::size_t content_length_ = (std::size_t)-1;
 		bool is_close_ = false;
 		bool is_sending_ = false;
 		std::list<std::string> send_buffers_;
@@ -335,7 +389,7 @@ namespace xsocket_io
 		std::string url_;
 		std::string path_;
 		xhttper::query query_;
-
+		std::string body_;
 		std::function<void()> on_request_;
 	};
 }

@@ -46,7 +46,7 @@ namespace xsocket_io
 				sess->regist_session_ = [this](auto &&...args) { return regist_session(std::forward<decltype(args)>(args)...); };
 				sess->check_static_ = [this](auto &&...args) { return check_static(std::forward<decltype(args)>(args)...); };
 				sess->get_upgrades_ = [this](auto &&...args) { return get_upgrades(std::forward<decltype(args)>(args)...); };
-
+				sess->check_sid_ = [this](auto &&...args) { return check_sid(std::forward<decltype(args)>(args)...); };
 				std::unique_lock<std::mutex> lock_g(session_mutex_);
 				session_cache_.emplace_back(std::move(sess));
 			});
@@ -78,6 +78,11 @@ namespace xsocket_io
 			return false;
 		}
 
+		bool check_sid(const std::string &sid)
+		{
+			std::unique_lock<std::mutex> lock_g(session_mutex_);
+			return sessions_.find(sid) != sessions_.end();
+		}
 		std::vector<std::string> get_upgrades(const std::string &transport)
 		{
 			return{};

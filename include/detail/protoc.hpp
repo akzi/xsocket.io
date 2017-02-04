@@ -5,7 +5,8 @@ namespace xsocket_io
 	{
 		enum packet_type
 		{
-			e_open,
+			e_null0 = 100,
+			e_open = 0,
 			e_close,
 			e_ping,
 			e_pong,
@@ -15,7 +16,8 @@ namespace xsocket_io
 		};
 		enum playload_type
 		{
-			e_connect,
+			e_null1 = 100,
+			e_connect = 0,
 			e_disconnect,
 			e_event,
 			e_ack,
@@ -33,16 +35,17 @@ namespace xsocket_io
 		struct packet
 		{
 			std::string playload_;
-			packet_type packet_type_;
-			playload_type playload_type_;
+			packet_type packet_type_ = packet_type::e_null0;
+			playload_type playload_type_ = playload_type::e_null1;
 			int64_t packet_id_ = 0;
 			std::string nsp_;
 			bool binary_ = false;
+			bool is_string_ = false;;
 		};
 		inline std::string to_json(error_msg msg)
 		{
 			if (msg == error_msg::e_bad_handshake_method)
-				return "{\"code\":2, \"message\":\"Bad handshake method\"}";
+				return "{\"code\":2, ""\"message\":\"Bad handshake method\"}";
 			else if (msg == error_msg::e_bad_request)
 				return "{\"code\":3, \"message\":\"Bad request\"}";
 			else if (msg == error_msg::e_session_id_unknown)
@@ -52,16 +55,45 @@ namespace xsocket_io
 			assert(false);
 			return{};
 		}
-
-		inline std::string packet_msg(const packet &_packet)
+		inline std::string encode_packet(packet &_packet)
 		{
+			if (_packet.playload_type_ != playload_type::e_null1)
+			{
+				_packet.playload_ = 
+					std::to_string(_packet.packet_type_) + 
+					std::to_string(_packet.playload_type_) + 
+					_packet.playload_;
+			}
+			else
+				_packet.playload_ = std::to_string(_packet.packet_type_) + _packet.playload_;
+
 			if (!_packet.binary_)
 			{
-				return std::to_string(_packet.playload_.size() + 1) + ":"
-					+ std::to_string(_packet.playload_type_) + _packet.playload_;
+				return std::to_string(_packet.playload_.size() + 1) + ":" + _packet.playload_;
 			}
+			
+			auto playload_len_str = std::to_string(_packet.playload_.size());
+			std::string buffer;
+			buffer.resize(playload_len_str.size() + 2);
+
+			buffer[0] = 1;
+			if (_packet.is_string_)
+				buffer[0] = 0;
+
+			for (size_t i = 0; i < playload_len_str.size(); i++)
+			{
+				std::string temp;
+				temp.push_back(playload_len_str[i]);
+				auto num = std::strtol(temp.c_str(), 0, 10);
+				buffer[i + 1] = ((char)num);
+			}
+			buffer[buffer.size() - 1] = (char)255;
+			buffer.append(_packet.playload_);
+			return buffer;
+			assert(false);
+			return{};
 		}
-		inline std::list<packet> unpacket(const std::string &data,bool binary)
+		inline std::list<packet> decode_packet(const std::string &data,bool binary)
 		{
 
 			#define assert_ptr()\
@@ -75,8 +107,8 @@ namespace xsocket_io
 			do
 			{
 				packet _packet;
-				packet_type _packet_type;
-				playload_type _playload_type;
+				packet_type _packet_type = e_null0;
+				playload_type _playload_type = e_null1;
 				long len = 0;
 				if (!binary)
 				{
@@ -107,24 +139,27 @@ namespace xsocket_io
 					assert_ptr();
 				}
 				
-				char ch = *pos;
+				char ch = *pos - '0';
 				if (ch < e_open || ch > e_noop)
 					throw std::logic_error("parse packet type error");
-				++pos;
-				assert_ptr();
 				_packet_type = static_cast<packet_type>(ch);
-
-				ch = *pos;
-				if (ch < e_connect || ch > e_binary_ack)
-					throw std::logic_error("parse playload type error");
-				_playload_type = static_cast<playload_type>(ch);
 				++pos;
-				assert_ptr();
-				if (len > 1)
+				if (_packet_type == packet_type::e_message)
 				{
-					_packet.playload_.append(pos, len - 1);
-					pos += len;
+					assert_ptr();
+					ch = *pos - '0';
+					if (ch < e_connect || ch > e_binary_ack)
+						throw std::logic_error("parse playload type error");
+					_playload_type = static_cast<playload_type>(ch);
+					++pos;
+					assert_ptr();
+					if (len > 1)
+					{
+						_packet.playload_.append(pos, len - 1);
+						pos += len;
+					}
 				}
+				
 				_packet.binary_ = false;
 				_packet.packet_type_ = _packet_type;
 				_packet.playload_type_ = _playload_type;
