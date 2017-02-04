@@ -7,8 +7,9 @@ namespace xsocket_io
 		using handle_request_t = std::function<void(request, response)> ;
 		using handle_session_close_t = std::function<void(session)>;
 		xserver()
+			:proactor_pool_(1)
 		{
-
+			init();
 		}
 
 		void on_connection(const std::function<void(session&)> &handle)
@@ -28,15 +29,24 @@ namespace xsocket_io
 		{
 			proactor_pool_.bind(ip, port);
 		}
+		void start()
+		{
+			proactor_pool_.start();
+		}
+		void set_static(const std::string &path)
+		{
+			static_path_ = path;
+		}
 	private:
 		void init()
 		{
 			proactor_pool_.regist_accept_callback([this](xnet::connection &&conn) {
 
 				std::unique_ptr<session> sess(new session(proactor_pool_, std::move(conn)));
-				sess->regist_session_ = [this](auto &&...args) {
-					return regist_session(std::forward<decltype(args)>(args)...); 
-				};
+				sess->regist_session_ = [this](auto &&...args) { return regist_session(std::forward<decltype(args)>(args)...); };
+				sess->check_static_ = [this](auto &&...args) { return check_static(std::forward<decltype(args)>(args)...); };
+				sess->get_upgrades_ = [this](auto &&...args) { return get_upgrades(std::forward<decltype(args)>(args)...); };
+
 				std::unique_lock<std::mutex> lock_g(session_mutex_);
 				session_cache_.emplace_back(std::move(sess));
 			});
@@ -59,12 +69,19 @@ namespace xsocket_io
 		}
 		bool check_static(const std::string& filename, std::string &filepath)
 		{
-			filepath = xutil::vfs::getcwd()() + public_path_ + filename;
+			filepath = xutil::vfs::getcwd()() + static_path_ + filename;
+			if (filename == "/")
+				filepath = xutil::vfs::getcwd()() + static_path_ +  "index.html";
 			if (xutil::vfs::file_exists()(filepath))
 				return true;
+			filepath.clear();
 			return false;
 		}
-		std::string public_path_;
+
+		std::vector<std::string> get_upgrades(const std::string &transport)
+		{
+			return{};
+		}
 		std::mutex session_mutex_;
 		std::map<std::string, std::unique_ptr<session>> sessions_;
 		std::list<std::unique_ptr<session>> session_cache_;
@@ -73,5 +90,6 @@ namespace xsocket_io
 
 		handle_request_t handle_request_;
 		handle_session_close_t handle_session_close_;
+		std::string static_path_;
 	};
 }

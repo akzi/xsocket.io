@@ -80,6 +80,7 @@ namespace xsocket_io
 			polling_.set_timer_ = [this](auto &&...args) {return set_timer(std::forward<decltype(args)>(args)...); };
 			polling_.del_timer_ = [this](auto &&...args) {return del_timer(std::forward<decltype(args)>(args)...); };
 			polling_.handle_req_ = [this](auto &&...args) {return handle_req(std::forward<decltype(args)>(args)...); };
+			polling_.init();
 		}
 		void init()
 		{
@@ -97,12 +98,15 @@ namespace xsocket_io
 				throw std::runtime_error("event");
 			event_handles_.emplace(event_name, std::move(func));
 		}
+
 		void regist_event(const std::string &event_name, std::function<void()> &&handle)
 		{
 			if (event_handles_.find(event_name) != event_handles_.end())
 				throw std::runtime_error("event");
 			event_handles_.emplace(event_name, std::move(handle));
 		}
+
+
 		bool upgrade_ = false;
 		xnet::proactor_pool &pro_pool_;
 		std::vector<std::function<void()>> close_callbacks_;

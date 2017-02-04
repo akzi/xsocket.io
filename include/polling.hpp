@@ -2,15 +2,13 @@
 namespace xsocket_io
 {
 	class session;
-	class request;
 	namespace detail
 	{
-
 		class polling
 		{
 		public:
 			polling(xnet::connection &&conn)
-				:conn_(std::move(conn))
+				:request_(std::move(conn))
 			{
 				init();
 			}
@@ -20,7 +18,7 @@ namespace xsocket_io
 			}
 			void close()
 			{
-				is_close_ = true;
+
 			}
 			
 			void send(detail::packet_type _packet_type, detail::playload_type _playload_type, std::string &&_play_load)
@@ -36,8 +34,6 @@ namespace xsocket_io
 					return;
 				}
 				auto buffer = detail::packet_msg(_packet);
-				send_data(buffer, 200);
-				is_sending_ = true;
 				polling_ = false;
 			}
 		private:
@@ -45,7 +41,9 @@ namespace xsocket_io
 
 			void init()
 			{
-				
+				request_.on_request_ = [this] {
+					on_request();
+				};
 			}
 			
 			std::string gen_sid()
@@ -53,7 +51,9 @@ namespace xsocket_io
 				static std::atomic_int64_t uid = 0;
 				auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
 				auto id = uid.fetch_add(1) + now;
-				return xutil::base64::encode(std::to_string(id));
+				auto sid = xutil::base64::encode(std::to_string(id));
+				sid.pop_back();
+				return sid;
 			}
 			bool check_sid(const std::string &sid)
 			{
@@ -61,7 +61,7 @@ namespace xsocket_io
 				return check_sid_(sid);
 			}
 
-			bool set_timer(const std::function<void()> &action)
+			void set_timer(const std::function<void()> &action)
 			{
 				if (timer_id_)
 					del_timer_(timer_id_);
@@ -79,15 +79,27 @@ namespace xsocket_io
 					detail::packet _packet;
 					_packet.packet_type_ = detail::packet_type::e_close;
 					_packet.playload_type_ = detail::playload_type::e_disconnect;
-					send_data(detail::packet_msg(_packet), 200);
-					on_close();
 				});
+			}
+			std::string build_resp(const std::string &resp, int status = 200)
+			{
+				xhttper::http_builder http_builder;
+
+				http_builder.set_status(status);
+				http_builder.append_entry("Content-Length", std::to_string(resp.size()));
+				http_builder.append_entry("Content-Type", "text/plain; charset=utf-8");
+				http_builder.append_entry("Connection", "keep-alive");
+				http_builder.append_entry("Date", xutil::functional::get_rfc1123()());
+				http_builder.append_entry("X-Powered-By", "xsocket.io");
+				auto buffer = http_builder.build_resp();
+				buffer.append(resp);
+				return  buffer;
 			}
 			void on_polling_req()
 			{
 				using namespace detail;
 				using strncasecmper = xutil::functional::strncasecmper;
-				auto sid = http_parser_.get_header<strncasecmper>("sid");
+				auto sid = request_.get_entry("sid");
 				set_heartbeat_timeout();
 				if (sid.empty())
 				{
@@ -97,18 +109,18 @@ namespace xsocket_io
 					msg.sid = gen_sid();
 					msg.upgrades = get_upgrades_(query_.get("transport"));
 					xjson::obj_t obj;
-					msg.xpack(obj);
+					obj = msg;
 					auto data = obj.str();
 					auto buffer = std::to_string(data.size() + 1) + ":0" + data;
-					send_data(buffer, 200);
+					request_.write(build_resp(buffer));
 					return;
 				}
 				if (!check_sid(sid))
 				{
-					send_data(to_json(error_msg::e_session_id_unknown), 400, false);
+					request_.write(build_resp(to_json(error_msg::e_session_id_unknown),400));
 					return;
 				}
-				flush();
+
 
 			}
 			void on_packet(const std::list<detail::packet> &_packet)
@@ -118,7 +130,26 @@ namespace xsocket_io
 			}
 			void on_request()
 			{
-				
+				auto url = request_.url();
+				std::cout << "URL: " << url << std::endl;;
+				if (request_.method() == "GET")
+				{
+					if (url.find('?') == url.npos)
+					{
+						if (check_static(url))
+							return;
+					}
+					if (request_.path() != "/socket.io/")
+					{
+						request_.write(build_resp("Cannot GET " + url, 404));
+						return;
+					}
+					on_polling_req();
+				}
+				else if (request_.method() == "POST")
+				{
+
+				}
 			}
 			
 
@@ -127,6 +158,7 @@ namespace xsocket_io
 				std::string filepath;
 				if (!check_static_(url, filepath))
 					return false;
+				request_.send_file(filepath);
 				return true;
 			}
 
@@ -156,6 +188,8 @@ namespace xsocket_io
 			std::function<std::vector<std::string>(const std::string&)>	get_upgrades_;
 			std::function<std::size_t(uint32_t, std::function<bool()>&&)> set_timer_;
 			std::function<void(std::size_t)> del_timer_;
+
+			request request_;
 		};
 
 	}

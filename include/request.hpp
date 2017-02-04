@@ -1,10 +1,16 @@
 #pragma once
 namespace xsocket_io
 {
+	namespace detail
+	{
+		class polling;
+	}
+
 	class request
 	{
 	public:
-		request()
+		request(xnet::connection &&conn)
+			:conn_(std::move(conn))
 		{
 			init();
 		}
@@ -42,14 +48,23 @@ namespace xsocket_io
 		void send_file(const std::string &filepath)
 		{
 			if (!xutil::vfs::file_exists()(filepath))
-				send_data("Cannot get file", 400, false);
+				resp("Cannot get file", 400, false);
 			if (check_cache(filepath))
 				return;
 			do_send_file(filepath);
 		}
+		void write(std::string &&buffer)
+		{
+			send_buffers_.push_back(std::move(buffer));
+			flush();
+		}
+		
 	private:
+		friend class detail::polling;
 		void do_send_file(const std::string &filepath)
 		{
+			std::cout << filepath << std::endl;
+
 			using get_extension = xutil::functional::get_extension;
 			using get_filename = xutil::functional::get_filename;
 			using get_rfc1123 = xutil::functional::get_rfc1123;
@@ -88,17 +103,17 @@ namespace xsocket_io
 					end = range.second;
 				}
 			}
+			xhttper::http_builder http_builder;
 
-			http_builder_.append_entry("Date", get_rfc1123()());
-			http_builder_.append_entry("Connection", "keep-alive");
-			http_builder_.append_entry("Content-Type", http_builder_.get_content_type(get_extension()(filepath)));
-			http_builder_.append_entry("Content-Length", std::to_string(end - begin).c_str());
-			http_builder_.append_entry("Content-Disposition", "attachment; filename=" + get_filename()(filepath));
+			http_builder.append_entry("Date", get_rfc1123()());
+			http_builder.append_entry("Connection", "keep-alive");
+			http_builder.append_entry("Content-Type", http_builder.get_content_type(get_extension()(filepath)));
+			http_builder.append_entry("Content-Length", std::to_string(end - begin).c_str());
 
 			auto ssbuf = std::ostringstream();
 			auto lm = last_modified()(filepath) + size;
 			ssbuf << std::hex << lm;
-			http_builder_.append_entry("Etag", ssbuf.str());
+			http_builder.append_entry("Etag", ssbuf.str());
 			if (has_range)
 			{
 				std::string content_range("bytes ");
@@ -108,9 +123,9 @@ namespace xsocket_io
 				content_range.append("/");
 				content_range.append(std::to_string(size));
 
-				http_builder_.set_status(206);
-				http_builder_.append_entry("Accept-Range", "bytes");
-				http_builder_.append_entry("Content-Range", content_range);
+				http_builder.set_status(206);
+				http_builder.append_entry("Accept-Range", "bytes");
+				http_builder.append_entry("Content-Range", content_range);
 			}
 
 			std::string buffer;
@@ -118,17 +133,20 @@ namespace xsocket_io
 			std::function<void()> resume_handle;
 			file.seekg(begin, std::ios::beg);
 			conn_.regist_send_callback([&](std::size_t len) {
+
 				if (len == 0)
 				{
 					is_close_ = true;
 					file.close();
-					resume_handle();
+					if(resume_handle)
+						resume_handle();
 					return;
 				}
 				if (begin == end)
 				{
 					file.close();
-					resume_handle();
+					if (resume_handle)
+						resume_handle();
 					return;
 				}
 				auto to_reads = std::min<uint64_t>(buffer.size(), end - begin);
@@ -140,20 +158,22 @@ namespace xsocket_io
 					begin += gcount;
 				}
 			});
-			conn_.async_send(std::move(http_builder_.build_resp()));
+			conn_.async_send(std::move(http_builder.build_resp()));
 			xcoroutine::yield(resume_handle);
+			init_send_callback();
 			if (is_close_)
 				return on_close();
 		}
-		void send_data(const std::string &msg, int status, bool binary = true)
+		void resp(const std::string &msg, int status, bool binary = true)
 		{
-			http_builder_.set_status(status);
-			http_builder_.append_entry("Content-Length", std::to_string(msg.size()));
-			http_builder_.append_entry("Content-Type", "text/html; charset=utf-8");
-			http_builder_.append_entry("Connection", "keep-alive");
-			http_builder_.append_entry("Date", xutil::functional::get_rfc1123()());
-			http_builder_.append_entry("X-Powered-By", "xsocket.io");
-			auto buffer = http_builder_.build_resp();
+			xhttper::http_builder http_builder;
+			http_builder.set_status(status);
+			http_builder.append_entry("Content-Length", std::to_string(msg.size()));
+			http_builder.append_entry("Content-Type", "text/html; charset=utf-8");
+			http_builder.append_entry("Connection", "keep-alive");
+			http_builder.append_entry("Date", xutil::functional::get_rfc1123()());
+			http_builder.append_entry("X-Powered-By", "xsocket.io");
+			auto buffer = http_builder.build_resp();
 			buffer.append(msg);
 			if (is_sending_)
 			{
@@ -196,16 +216,16 @@ namespace xsocket_io
 				if (if_none_match != ssbuf.str())
 					return false;
 			}
-
-			http_builder_.set_status(304);
-			http_builder_.append_entry("Accept-range", "bytes");
-			http_builder_.append_entry("Date", get_rfc1123()());
-			http_builder_.append_entry("Connection", "keep-alive");
+			xhttper::http_builder http_builder;
+			http_builder.set_status(304);
+			http_builder.append_entry("Accept-range", "bytes");
+			http_builder.append_entry("Date", get_rfc1123()());
+			http_builder.append_entry("Connection", "keep-alive");
 			if (is_sending_)
-				send_buffers_.emplace_back(http_builder_.build_resp());
+				send_buffers_.emplace_back(http_builder.build_resp());
 			else
 			{
-				conn_.async_send(http_builder_.build_resp());
+				conn_.async_send(http_builder.build_resp());
 				is_sending_ = true;
 			}
 			return true;
@@ -255,8 +275,8 @@ namespace xsocket_io
 			if (pos == url_.npos)
 			{
 				path_ = url_;
+				query_ = std::move(xhttper::query());
 				return on_request();
-				return;
 			}
 			path_ = url_.substr(0, pos);
 			pos++;
@@ -266,7 +286,13 @@ namespace xsocket_io
 		}
 		void on_request()
 		{
-
+			xcoroutine::create([this] {
+				on_request_();
+				http_parser_.reset();
+				if(!is_close_)
+					conn_.async_recv_some();
+			});
+			
 		}
 		void flush()
 		{
@@ -281,7 +307,7 @@ namespace xsocket_io
 				return;
 			}
 		}
-		void regist_send_callback()
+		void init_send_callback()
 		{
 			conn_.regist_send_callback([this](std::size_t len) {
 				if (!len)
@@ -298,17 +324,18 @@ namespace xsocket_io
 		void init()
 		{
 			regist_recv_callback();
-			regist_send_callback();
+			init_send_callback();
 			conn_.async_recv_some();
 		}
 		bool is_close_ = false;
 		bool is_sending_ = false;
 		std::list<std::string> send_buffers_;
 		xhttper::http_parser http_parser_;
-		xhttper::http_builder http_builder_;
 		xnet::connection conn_;
 		std::string url_;
 		std::string path_;
 		xhttper::query query_;
+
+		std::function<void()> on_request_;
 	};
 }
