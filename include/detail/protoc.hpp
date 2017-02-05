@@ -55,40 +55,41 @@ namespace xsocket_io
 			assert(false);
 			return{};
 		}
-		inline std::string encode_packet(packet &_packet)
+		inline std::string encode_packet(const packet &_packet)
 		{
+			std::string playload;
 			if (_packet.playload_type_ != playload_type::e_null1)
 			{
-				_packet.playload_ = 
+				playload =
 					std::to_string(_packet.packet_type_) + 
 					std::to_string(_packet.playload_type_) + 
 					_packet.playload_;
 			}
 			else
-				_packet.playload_ = std::to_string(_packet.packet_type_) + _packet.playload_;
+				playload = std::to_string(_packet.packet_type_) + _packet.playload_;
 
 			if (!_packet.binary_)
 			{
 				return std::to_string(_packet.playload_.size() + 1) + ":" + _packet.playload_;
 			}
 			
-			auto playload_len_str = std::to_string(_packet.playload_.size());
+			auto playload_len = std::to_string(playload.size());
 			std::string buffer;
-			buffer.resize(playload_len_str.size() + 2);
+			buffer.resize(playload_len.size() + 2);
 
-			buffer[0] = 1;
-			if (_packet.is_string_)
-				buffer[0] = 0;
+			buffer[0] = 0;
+			if (!_packet.is_string_)
+				buffer[0] = 1;
 
-			for (size_t i = 0; i < playload_len_str.size(); i++)
+			for (size_t i = 0; i < playload_len.size(); i++)
 			{
 				std::string temp;
-				temp.push_back(playload_len_str[i]);
+				temp.push_back(playload_len[i]);
 				auto num = std::strtol(temp.c_str(), 0, 10);
 				buffer[i + 1] = ((char)num);
 			}
 			buffer[buffer.size() - 1] = (char)255;
-			buffer.append(_packet.playload_);
+			buffer.append(playload);
 			return buffer;
 		}
 		inline std::list<packet> decode_packet(const std::string &data,bool binary)
@@ -142,8 +143,10 @@ namespace xsocket_io
 					throw std::logic_error("parse packet type error");
 				_packet_type = static_cast<packet_type>(ch);
 				++pos;
+				len--;
 				if (_packet_type == packet_type::e_message)
 				{
+					len--;
 					assert_ptr();
 					ch = *pos - '0';
 					if (ch < e_connect || ch > e_binary_ack)
@@ -151,9 +154,9 @@ namespace xsocket_io
 					_playload_type = static_cast<playload_type>(ch);
 					++pos;
 					assert_ptr();
-					if (len > 1)
+					if (len > 0)
 					{
-						_packet.playload_.append(pos, len - 1);
+						_packet.playload_.append(pos, len);
 						pos += len;
 					}
 				}

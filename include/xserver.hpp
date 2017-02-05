@@ -5,7 +5,6 @@ namespace xsocket_io
 	{
 	public:
 		using handle_request_t = std::function<void(request, response)> ;
-		using handle_session_close_t = std::function<void(session&)>;
 		xserver()
 			:proactor_pool_(1)
 		{
@@ -16,11 +15,6 @@ namespace xsocket_io
 		{
 			connection_callback_ = handle;
 		}
-		void on_close(const handle_session_close_t &handle)
-		{
-			handle_session_close_ = handle;
-		}
-
 		void on_request(const handle_request_t &handle)
 		{
 			handle_request_ = handle;
@@ -146,7 +140,6 @@ namespace xsocket_io
 			obj = msg;
 			_packet.binary_ = !!!req->get_entry("b64").size();
 			_packet.packet_type_ = packet_type::e_open;
-			_packet.is_string_ = true;
 			_packet.playload_type_ = playload_type::e_null1;
 			_packet.playload_ = obj.str();
 
@@ -166,18 +159,11 @@ namespace xsocket_io
 			return sid;
 		}
 
-		std::size_t get_session_size()
-		{
-			return sessions_.size();
-		}
-
-
 		void new_session(const std::string &sid)
 		{
 			std::shared_ptr<session> sess(new session(proactor_pool_));
 			sess->close_callback_ = [this](auto &&...args) { return session_on_close(std::forward<decltype(args)>(args)...); };
 			sess->on_request_ = [this](auto &&...args) { return on_request(std::forward<decltype(args)>(args)...); };
-			sess->get_session_size_ = [this]{ return get_session_size(); };
 			sess->get_sessions_ = [this] {return get_session(); };
 			sess->sid_ = sid;
 			sess->init();
@@ -230,10 +216,7 @@ namespace xsocket_io
 			{
 				ptr = std::move(itr->second);
 				sessions_.erase(itr);
-				return;
 			}
-			if(handle_session_close_)
-				handle_session_close_(*ptr);
 		}
 		std::vector<std::string> get_upgrades(const std::string &transport)
 		{
@@ -249,7 +232,6 @@ namespace xsocket_io
 		xnet::proactor_pool proactor_pool_;
 
 		handle_request_t handle_request_;
-		handle_session_close_t handle_session_close_;
 		std::string static_path_;
 
 		uint32_t ping_interval_ = 5000;

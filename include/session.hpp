@@ -48,7 +48,8 @@ namespace xsocket_io
 			if (_request)
 			{
 				auto msg = detail::encode_packet(_packet);
-				return _request->write(build_resp(msg, 200, origin_, !b64_));
+				_request->write(build_resp(msg, 200, origin_, !b64_));
+				return;
 			}
 			packets_.emplace_back(_packet);
 		}
@@ -120,35 +121,36 @@ namespace xsocket_io
 		}
 		void pong()
 		{
+			detail::packet _packet;
+			_packet.packet_type_ = detail::packet_type::e_pong;
 			auto _request = polling_.lock();
 			if (_request)
 			{
-				detail::packet _packet;
-				_packet.packet_type_ = detail::packet_type::e_pong;
-				_packet.binary_ = !!!_request->get_entry("b64").size();
-				_packet.is_string_ = true;
+				_packet.binary_ = !b64_;
 				_request->write(build_resp(encode_packet(_packet), 200, origin_, _packet.binary_));
 				polling_.reset();
+				return;
 			}
-			
+			packets_.emplace_back(std::move(_packet));
 		}
 
 		void connect_ack()
 		{
+			connect_ack_ = true;
 			auto _request = polling_.lock();
+
+			detail::packet _packet;
+			_packet.packet_type_ = detail::packet_type::e_message;
+			_packet.playload_type_ = detail::playload_type::e_connect;
+			_packet.binary_ = !b64_;
+
 			if (_request)
 			{
-				detail::packet _packet;
-				_packet.packet_type_ = detail::packet_type::e_message;
-				_packet.playload_type_ = detail::playload_type::e_connect;
-				_packet.binary_ = !!!_request->get_entry("b64").size();
-				_packet.is_string_ = true;
-				connect_ack_ = true;
-				auto origin = _request->get_entry("Origin");
-				_request->write(build_resp(encode_packet(_packet), 200, origin, _packet.binary_));
+				_request->write(build_resp(encode_packet(_packet), 200, origin_, _packet.binary_));
 				polling_.reset();
+				return;
 			}
-			
+			packets_.push_back(_packet);
 		}
 		void on_packet(const std::list<detail::packet> &_packet)
 		{
@@ -159,6 +161,10 @@ namespace xsocket_io
 					if (itr.packet_type_ == detail::packet_type::e_ping)
 					{
 						pong();
+					}
+					else if (itr.packet_type_ == detail::packet_type::e_close)
+					{
+						return on_close();
 					}
 					else if (itr.packet_type_ == detail::packet_type::e_message)
 					{
@@ -186,21 +192,8 @@ namespace xsocket_io
 			{
 				std::cout << e.what() << std::endl;
 			}
-			
-		}
-		void handle_req()
-		{
-			
 		}
 
-		std::size_t set_timer(uint32_t timeout, std::function<bool()>&& actions)
-		{
-			return pro_pool_.set_timer(timeout, std::move(actions));
-		}
-		void del_timer(std::size_t timer_id)
-		{
-			pro_pool_.cancel_timer(timer_id);
-		}
 		void on_polling(std::shared_ptr<request> &req)
 		{
 			polling_ = req;
@@ -209,14 +202,21 @@ namespace xsocket_io
 			auto url = req->url();
 			origin_ = req->get_entry("Origin");
 			b64_ = !!req->get_query().get("b64").size();
-
-			std::cout << "on_polling " << method << " " << url << std::endl;
-
 			if (!connect_ack_)
 			{
 				connect_ack_ = true;
 				return connect_ack();
 			}
+			if (packets_.empty())
+				return;
+			std::string buffer;
+			for (auto &itr : packets_)
+			{
+				itr.binary_ = !b64_;
+				buffer += detail::encode_packet(itr);
+			}
+			packets_.clear();
+			req->write(build_resp(buffer, 200, origin_, !b64_));
 		}
 		void init()
 		{
@@ -252,8 +252,12 @@ namespace xsocket_io
 		}
 		void on_close()
 		{
+			auto itr = event_handles_.find("disconnect");
+			if (itr != event_handles_.end())
+				itr->second(xjson::obj_t());
 			close_callback_(sid_);
 		}
+
 		bool connect_ack_ = false;
 		bool upgrade_ = false;
 		bool b64_ = false;
@@ -265,13 +269,10 @@ namespace xsocket_io
 		std::function<void(const std::string &)> close_callback_;
 		std::function<void(std::shared_ptr<request>)> on_request_;
 		std::function<std::list<session*>()> get_sessions_;
-		std::function<std::size_t()> get_session_size_;
 		xnet::connection conn_;
-		std::string msg_;
 		std::string sid_ ;
 
 		std::weak_ptr<request> polling_;
-
 		std::map<std::string, std::string > properties_;
 	};
 }

@@ -103,7 +103,6 @@ namespace xsocket_io
 				xcoroutine::yield(resume_handle);
 				init_recv_callback();
 			}
-			std::cout << body_ << std::endl;
 			return body_;
 		}
 	private:
@@ -327,9 +326,9 @@ namespace xsocket_io
 					if (!is_close_)
 						conn_.async_recv_some();
 				}
-				catch (...)
+				catch (std::exception &e)
 				{
-
+					std::cout << e.what() << std::endl;
 				}
 			});
 			
