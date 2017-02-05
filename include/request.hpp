@@ -48,7 +48,7 @@ namespace xsocket_io
 		void send_file(const std::string &filepath)
 		{
 			if (!xutil::vfs::file_exists()(filepath))
-				resp("Cannot get file", 400, false);
+				write(build_resp("Cannot get file", 400, {},false));
 			if (check_cache(filepath))
 				return;
 			do_send_file(filepath);
@@ -92,7 +92,6 @@ namespace xsocket_io
 					}
 					i++;
 					body_.append(data, len);
-					std::cout << body_ << std::endl;
 					if (body_.size() == content_length())
 					{
 						resume_handle();
@@ -104,6 +103,7 @@ namespace xsocket_io
 				xcoroutine::yield(resume_handle);
 				init_recv_callback();
 			}
+			std::cout << body_ << std::endl;
 			return body_;
 		}
 	private:
@@ -113,8 +113,6 @@ namespace xsocket_io
 
 		void do_send_file(const std::string &filepath)
 		{
-			std::cout << filepath << std::endl;
-
 			using get_extension = xutil::functional::get_extension;
 			using get_filename = xutil::functional::get_filename;
 			using get_rfc1123 = xutil::functional::get_rfc1123;
@@ -213,25 +211,6 @@ namespace xsocket_io
 			init_send_callback();
 			if (is_close_)
 				return on_close();
-		}
-		void resp(const std::string &msg, int status, bool binary = true)
-		{
-			xhttper::http_builder http_builder;
-			http_builder.set_status(status);
-			http_builder.append_entry("Content-Length", std::to_string(msg.size()));
-			http_builder.append_entry("Content-Type", "text/html; charset=utf-8");
-			http_builder.append_entry("Connection", "keep-alive");
-			http_builder.append_entry("Date", xutil::functional::get_rfc1123()());
-			http_builder.append_entry("X-Powered-By", "xsocket.io");
-			auto buffer = http_builder.build_resp();
-			buffer.append(msg);
-			if (is_sending_)
-			{
-				send_buffers_.emplace_back(std::move(buffer));
-				return;
-			}
-			conn_.async_send(std::move(buffer));
-			is_sending_ = true;
 		}
 		bool check_cache(const std::string &filepath)
 		{
@@ -348,9 +327,9 @@ namespace xsocket_io
 					if (!is_close_)
 						conn_.async_recv_some();
 				}
-				catch (std::exception &e)
+				catch (...)
 				{
-					std::cout <<e.what() << std::endl;
+
 				}
 			});
 			
@@ -390,6 +369,7 @@ namespace xsocket_io
 			init_send_callback();
 			conn_.async_recv_some();
 		}
+		int64_t id_ = 0;
 		std::size_t content_length_ = (std::size_t)-1;
 		bool is_close_ = false;
 		bool is_sending_ = false;

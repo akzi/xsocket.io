@@ -46,91 +46,91 @@ namespace xsocket_io
 		void init()
 		{
 			proactor_pool_.regist_accept_callback([this](xnet::connection &&conn) {
-				std::unique_ptr<request> request_ptr(new request(std::move(conn)));
-				attach_request(std::move(request_ptr));
+				std::shared_ptr<request> request_ptr(new request(std::move(conn)));
+				auto id = uid();
+				request_ptr->id_ = id;
+				attach_request(request_ptr);
 			});
 		}
-		int64_t attach_request(std::unique_ptr<request> &&request_ptr)
+		void attach_request(std::shared_ptr<request> &request_ptr)
 		{
-			auto id = uid();
-			auto ptr = request_ptr.get();
-			request_ptr->on_request_ = [id, this, ptr] {
-				on_request(id, *ptr);
+			auto id = request_ptr->id_;
+			std::weak_ptr<request> sess_wptr = request_ptr;
+
+			request_ptr->on_request_ = [this, sess_wptr] {
+				on_request(sess_wptr.lock());
 			};
+
 			request_ptr->close_callback_ = [id, this] {
 				detach_request(id);
 			};
+
 			requests_.emplace(id, std::move(request_ptr));
-			return id;
 		}
 
-		std::unique_ptr<request> detach_request(int64_t id)
+		std::shared_ptr<request> detach_request(int64_t id)
 		{
 			std::lock_guard<std::mutex> _lock_guard(requests_mutex_);
 
-			std::unique_ptr<request> req_ptr;
+			std::shared_ptr<request> req_ptr;
 			auto itr = requests_.find(id);
 			assert(itr != requests_.end());
 			req_ptr = std::move(itr->second);
 			requests_.erase(itr);
 			return req_ptr;
 		}
-		void on_request(std::unique_ptr<request> &&req_ptr)
+
+		void on_request(std::shared_ptr<request> req)
 		{
-			auto ptr = req_ptr.get();
-			auto id = attach_request(std::move(req_ptr));
-			on_request(id, *ptr);
-		}
-		void on_request(int64_t id, request &req)
-		{
-			if (req.method() == "POST")
+			auto &query = req->get_query();
+			auto sid = query.get("sid");
+			auto transport = query.get("transport");
+			auto path = req->path();
+			auto origin = req->get_entry("Origin");
+			auto _session = find_session(sid);
+
+			if (req->method() == "POST")
 			{
-				auto sid = req.get_query().get("sid");
 				if (sid.size())
 				{
-					if (!check_sid(sid))
+					if (!_session)
 					{
-						auto origin = req.get_entry("Origin");
-						req.write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
+						req->write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
 						return;
 					}
-					auto req_ptr = detach_request(id);
-					do 
-					{
-						std::unique_lock<std::mutex> lock_g(session_mutex_);
-						auto itr = sessions_.find(sid);
-						itr->second->attach_request(std::move(req_ptr));
-					} while (false);
+					_session->on_packet(detail::decode_packet(req->body(), false));
+					req->write(build_resp("ok", 200, origin, false));
 				}
 			}
-			else if (req.method() == "GET")
+			else if (req->method() == "GET")
 			{
-				auto url = req.url();
+				auto url = req->url();
 				if (url.find('?') == url.npos)
 				{
 					std::string filepath;
 					if (check_static(url, filepath))
 					{
-						req.send_file(filepath);
+						req->send_file(filepath);
 						return;
 					}
 				}
-				auto &query = req.get_query();
-				auto transport = query.get("transport");
-				auto sid = query.get("sid");
-				auto t = query.get("t");
-				auto path = req.path();
-				if (path == "/socket.io/")
+				if (path == "/socket.io/" && transport == "polling")
 				{
 					if (sid.empty())
 					{
-						return handle_new_session(id, req);
+						return new_session(req);
 					}
+					if (!_session)
+					{
+						req->write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
+						return;
+					}
+					_session->on_polling(req);
 				}
-				
+
 			}
 		}
-		void handle_new_session(int64_t id, request &req)
+		void new_session(std::shared_ptr<request> &req)
 		{
 			using namespace detail;
 			auto sid = gen_sid();
@@ -140,19 +140,19 @@ namespace xsocket_io
 			open_msg msg;
 			msg.pingInterval = ping_interval_;
 			msg.pingTimeout = ping_timeout_;
-			msg.upgrades = get_upgrades(req.query_.get("transport"));
+			msg.upgrades = get_upgrades(req->query_.get("transport"));
 			msg.sid = sid;
 
 			obj = msg;
-			_packet.binary_ = !!!req.get_entry("b64").size();
+			_packet.binary_ = !!!req->get_entry("b64").size();
 			_packet.packet_type_ = packet_type::e_open;
 			_packet.is_string_ = true;
 			_packet.playload_type_ = playload_type::e_null1;
 			_packet.playload_ = obj.str();
 
-			req.write(build_resp(encode_packet(_packet), 200, req.get_entry("Origin"), _packet.binary_));
+			req->write(build_resp(encode_packet(_packet), 200, req->get_entry("Origin"), _packet.binary_));
 			
-			new_session(sid, detach_request(id));
+			new_session(sid);
 		}
 		
 		std::string gen_sid()
@@ -170,16 +170,15 @@ namespace xsocket_io
 		{
 			return sessions_.size();
 		}
-		void new_session(const std::string &sid, std::unique_ptr<request> &req)
+
+
+		void new_session(const std::string &sid)
 		{
-			std::unique_ptr<session> sess(new session(proactor_pool_));
-			sess->check_static_ = [this](auto &&...args) { return check_static(std::forward<decltype(args)>(args)...); };
-			sess->get_upgrades_ = [this](auto &&...args) { return get_upgrades(std::forward<decltype(args)>(args)...); };
-			sess->check_sid_ = [this](auto &&...args) { return check_sid(std::forward<decltype(args)>(args)...); };
+			std::shared_ptr<session> sess(new session(proactor_pool_));
 			sess->close_callback_ = [this](auto &&...args) { return session_on_close(std::forward<decltype(args)>(args)...); };
 			sess->on_request_ = [this](auto &&...args) { return on_request(std::forward<decltype(args)>(args)...); };
-			sess->get_session_size_ = [this](auto &&...args) { return get_session_size(std::forward<decltype(args)>(args)...); };
-			sess->polling_.reset(new detail::polling(std::move(req)));
+			sess->get_session_size_ = [this]{ return get_session_size(); };
+			sess->get_sessions_ = [this] {return get_session(); };
 			sess->sid_ = sid;
 			sess->init();
 
@@ -209,12 +208,24 @@ namespace xsocket_io
 			std::unique_lock<std::mutex> lock_g(session_mutex_);
 			return sessions_.find(sid) != sessions_.end();
 		}
-
-		void session_on_close(session *sess)
+		std::shared_ptr<session> find_session(const std::string &sid)
 		{
-			std::unique_lock<std::mutex> lock_g(session_mutex_);
-			std::unique_ptr<session> ptr;
-			auto itr = sessions_.find(sess->get_sid());
+			auto itr = sessions_.find(sid);
+			if (itr == sessions_.end())
+				return nullptr;
+			return itr->second;
+		}
+		std::list<session*> get_session()
+		{
+			std::list<session*> sessions;
+			for (auto& itr : sessions_)
+				sessions.push_back(itr.second.get());
+			return sessions;
+		}
+		void session_on_close(const std::string &sid)
+		{
+			std::shared_ptr<session> ptr;
+			auto itr = sessions_.find(sid);
 			if (itr != sessions_.end())
 			{
 				ptr = std::move(itr->second);
@@ -229,10 +240,10 @@ namespace xsocket_io
 			return {};
 		}
 		std::mutex session_mutex_;
-		std::map<std::string, std::unique_ptr<session>> sessions_;
+		std::map<std::string, std::shared_ptr<session>> sessions_;
 
 		std::mutex requests_mutex_;
-		std::map<int64_t, std::unique_ptr<request>> requests_;
+		std::map<int64_t, std::shared_ptr<request>> requests_;
 
 		std::function<void(session &)> connection_callback_;
 		xnet::proactor_pool proactor_pool_;
@@ -241,7 +252,7 @@ namespace xsocket_io
 		handle_session_close_t handle_session_close_;
 		std::string static_path_;
 
-		uint32_t ping_interval_ = 2500;
-		uint32_t ping_timeout_ = 6000;
+		uint32_t ping_interval_ = 5000;
+		uint32_t ping_timeout_ = 12000;
 	};
 }

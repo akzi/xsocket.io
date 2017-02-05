@@ -4,25 +4,68 @@ namespace xsocket_io
 	class session
 	{
 	public:
+		struct broadcast_t
+		{
+			template<typename T>
+			void emit(const std::string &event_name, const T &msg)
+			{
+				auto sessions = get_sessions_();
+				for (auto itr: sessions)
+				{
+					if(itr->sid_ == sid_)
+						continue;
+					itr->emit(event_name, msg);
+				}
+			}
+		private:
+			friend class session;
+			std::string sid_;
+			std::function<std::list<session*>()> get_sessions_;
+		};
 		session(xnet::proactor_pool &ppool)
 			:pro_pool_(ppool)
 		{
 		}
-		template<typename ...Args>
-		void on(const std::string &event_name, std::function<void(Args &&...)> &&handle)
+		template<typename Lambda>
+		void on(const std::string &event_name, const Lambda &lambda)
 		{
-			regist_event(event_name, std::move(handle));
+			regist_event(event_name, xutil::to_function(lambda));
 		}
 
 		template<typename T>
 		void emit(const std::string &event_name,const T &msg)
 		{
+			xjson::obj_t obj;
+			obj.add(event_name);
+			obj.add(msg);
 
+			detail::packet _packet;
+			_packet.packet_type_ = detail::packet_type::e_message;
+			_packet.playload_type_ = detail::playload_type::e_event;
+			_packet.playload_ = obj.str();
+			_packet.binary_ = !b64_;
+			auto _request = polling_.lock();
+			if (_request)
+			{
+				auto msg = detail::encode_packet(_packet);
+				return _request->write(build_resp(msg, 200, origin_, !b64_));
+			}
+			packets_.emplace_back(_packet);
 		}
+		
 		std::string get_sid()
 		{
 			return sid_;
 		}
+		void set(const std::string &key, const std::string &value)
+		{
+			properties_[key] = value;
+		}
+		std::string get(const std::string &key)
+		{
+			return properties_[key];
+		}
+		broadcast_t broadcast;
 	private:
 		session(session &&sess) = delete;
 		session(session &sess) = delete;
@@ -30,116 +73,126 @@ namespace xsocket_io
 		session &operator = (session &sess) = delete;
 
 		friend class xserver;
-		void on_request(request &req)
+
+		struct cookie_opt
 		{
-			auto sid = req.get_query().get("sid");
-			if (sid != sid_)
+			bool httpOnly_ = true;
+			bool secure_ = false;
+			std::string path_ = "/";
+			int64_t expires_ = 0;
+
+			enum class sameSite
 			{
-				if (!check_sid(sid))
-				{
-					auto origin = req.get_entry("Origin");
-					req.write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
-					return;
-				}
-				return on_request_(detach_request(&req));
+				Null,
+				Strict,
+				Lax
+			};
+			sameSite sameSite_ = sameSite::Null;
+		};
+
+
+		std::string make_cookie(const std::string &key, const std::string &value, cookie_opt opt)
+		{
+			std::string buffer;
+			buffer.append(key);
+			buffer.append("=");
+			buffer.append(value);
+			if (opt.path_.size())
+			{
+				buffer.append("; path=");
+				buffer.append(opt.path_);
 			}
-			auto method = req.method();
-			auto path = req.path();
-			auto b64 = !!req.get_query().get("b64").size();
-			auto transport = req.get_query().get("transport");
-			if (path == "/socket.io/")
+			if (opt.secure_)
 			{
-				if (method == "POST" && transport == "polling")
-				{
-					auto body = req.body();
-					on_packet(detail::decode_packet(body, false));
-					auto origin = req.get_entry("Origin");
-					req.write(build_resp("ok", 200, origin));
-				}
+				buffer.append("; Secure");
+			}
+			if (opt.httpOnly_)
+			{
+				buffer.append("; HttpOnly");
+			}
+			if (opt.expires_ > 0)
+			{
+				buffer.append("; Expires=");
+				buffer.append(std::to_string(opt.expires_));
+			}
+			buffer.pop_back();
+			return buffer;
+		}
+		void pong()
+		{
+			auto _request = polling_.lock();
+			if (_request)
+			{
+				detail::packet _packet;
+				_packet.packet_type_ = detail::packet_type::e_pong;
+				_packet.binary_ = !!!_request->get_entry("b64").size();
+				_packet.is_string_ = true;
+				_request->write(build_resp(encode_packet(_packet), 200, origin_, _packet.binary_));
+				polling_.reset();
 			}
 			
 		}
-		bool check_add_user(const detail::packet &_packet)
+
+		void connect_ack()
 		{
-			if (_packet.playload_.size())
+			auto _request = polling_.lock();
+			if (_request)
 			{
-				auto obj = xjson::build(_packet.playload_);
-				if (obj.get<std::string>(0) == "add user")
-				{
-					polling_->resp_login(get_session_size_());
-					return true;
-				}
+				detail::packet _packet;
+				_packet.packet_type_ = detail::packet_type::e_message;
+				_packet.playload_type_ = detail::playload_type::e_connect;
+				_packet.binary_ = !!!_request->get_entry("b64").size();
+				_packet.is_string_ = true;
+				connect_ack_ = true;
+				auto origin = _request->get_entry("Origin");
+				_request->write(build_resp(encode_packet(_packet), 200, origin, _packet.binary_));
+				polling_.reset();
 			}
-			return false;
+			
 		}
 		void on_packet(const std::list<detail::packet> &_packet)
 		{
-			if (polling_)
+			if (polling_.lock())
 			{
 				for (auto itr : _packet)
 				{
 					if (itr.packet_type_ == detail::packet_type::e_ping)
 					{
-						polling_->pong();
+						pong();
 					}
 					else if (itr.packet_type_ == detail::packet_type::e_message)
 					{
-						if(check_add_user(itr))
-							continue;
-
+						on_message(itr);
 					}
 				}
 			}
 		}
-		void attach_request(std::unique_ptr<request> req)
+
+		void on_message(const detail::packet &_packet)
 		{
-			auto ptr = req.get();
-			req->on_request_ = [this, ptr] {
-				on_request(*ptr);
-			};
-			req->close_callback_ = [this, ptr] {
-				detach_request(ptr);
-			};
-			on_request(*ptr);
-			requests_.emplace_back(std::move(req));
-		}
-		std::unique_ptr<request> detach_request(request *ptr)
-		{
-			for (auto itr = requests_.begin(); itr != requests_.end(); ++itr)
+			try
 			{
-				if (itr->get() == ptr)
-				{
-					auto req_ptr = std::move(*itr);
-					requests_.erase(itr);
-					return req_ptr;
-				}
+				auto obj = xjson::build(_packet.playload_);
+				std::string event = obj.get<std::string>(0);
+				auto itr = event_handles_.find(event);
+				if (itr == event_handles_.end())
+					return;
+				if(obj.size() == 1)
+					itr->second(xjson::obj_t());
+				else
+					itr->second(obj.get(1));
 			}
-			return nullptr;
-		}
-		void on_heartbeat()
-		{
-
-		}
-		void on_packet(const detail::packet &_packet)
-		{
-
+			catch (const std::exception& e)
+			{
+				std::cout << e.what() << std::endl;
+			}
+			
 		}
 		void handle_req()
 		{
 			
 		}
-		bool check_transport(const std::string &_transport)
-		{
-			return check_transport_(_transport);
-		}
-		bool check_sid(const std::string &sid)
-		{
-			return check_sid_(sid);
-		}
-		bool check_static(const std::string &url, std::string &filepath)
-		{
-			return check_static_(url, filepath);
-		}
+
 		std::size_t set_timer(uint32_t timeout, std::function<bool()>&& actions)
 		{
 			return pro_pool_.set_timer(timeout, std::move(actions));
@@ -148,48 +201,49 @@ namespace xsocket_io
 		{
 			pro_pool_.cancel_timer(timer_id);
 		}
-		std::vector<std::string> get_upgrades(const std::string &transport)
+		void on_polling(std::shared_ptr<request> &req)
 		{
-			return get_upgrades_(transport);
-		}
-		void init_polling()
-		{
-			polling_->on_heartbeat_ = [this](auto &&...args) {return on_heartbeat(std::forward<decltype(args)>(args)...); };
-			polling_->on_sid_= [this](auto &&...args) {return on_sid(std::forward<decltype(args)>(args)...); };
-			polling_->on_packet_ = [this](auto &&...args) {return on_packet(std::forward<decltype(args)>(args)...); };
-			polling_->check_sid_ = [this](auto &&...args) {return check_sid(std::forward<decltype(args)>(args)...); };
-			polling_->check_transport_ = [this](auto &&...args) {return check_transport(std::forward<decltype(args)>(args)...); };
-			polling_->check_static_ = [this](auto &&...args) {return check_static(std::forward<decltype(args)>(args)...); };
-			polling_->get_upgrades_ = [this](auto &&...args) {return get_upgrades(std::forward<decltype(args)>(args)...); };
-			polling_->set_timer_ = [this](auto &&...args) {return set_timer(std::forward<decltype(args)>(args)...); };
-			polling_->del_timer_ = [this](auto &&...args) {return del_timer(std::forward<decltype(args)>(args)...); };
-			polling_->handle_req_ = [this](auto &&...args) {return handle_req(std::forward<decltype(args)>(args)...); };
-			polling_->close_callback_ = [this](auto &&...args) {return on_close(std::forward<decltype(args)>(args)...); };
-			polling_->sid_ = sid_;
-			polling_->init();
+			polling_ = req;
+			auto method = req->method();
+			auto path = req->path();
+			auto url = req->url();
+			origin_ = req->get_entry("Origin");
+			b64_ = !!req->get_query().get("b64").size();
+
+			std::cout << "on_polling " << method << " " << url << std::endl;
+
+			if (!connect_ack_)
+			{
+				connect_ack_ = true;
+				return connect_ack();
+			}
 		}
 		void init()
 		{
-			init_polling();
+			broadcast.sid_ = sid_;
+			broadcast.get_sessions_ = get_sessions_;
 		}
 
-		void regist_event(const std::string &event_name, std::function<void(std::string &&)> &&handle_)
+		void regist_event(const std::string &event_name, std::function<void(xjson::obj_t&obj)> &&handle_)
 		{
-			std::function<void(std::string &&)> handle;
-			std::function<void()> func = [handle = std::move(handle_),this]{
-				handle(std::move(msg_));
-				msg_.clear();
+			std::function<void(xjson::obj_t&obj)> handle;
+			auto func = [handle = std::move(handle_)](xjson::obj_t &obj){
+				handle(obj);
 			};
 			if (event_handles_.find(event_name) != event_handles_.end())
 				throw std::runtime_error("event");
 			event_handles_.emplace(event_name, std::move(func));
 		}
 
-		void regist_event(const std::string &event_name, std::function<void()> &&handle)
+		void regist_event(const std::string &event_name, std::function<void()> &&handle_)
 		{
+			std::function<void(xjson::obj_t&obj)> handle;
+			auto func = [handle = std::move(handle_)](xjson::obj_t &){
+				handle();
+			};
 			if (event_handles_.find(event_name) != event_handles_.end())
 				throw std::runtime_error("event");
-			event_handles_.emplace(event_name, std::move(handle));
+			event_handles_.emplace(event_name, std::move(func));
 		}
 
 		void on_sid(const std::string &sid)
@@ -198,25 +252,26 @@ namespace xsocket_io
 		}
 		void on_close()
 		{
-			close_callback_(this);
+			close_callback_(sid_);
 		}
-
+		bool connect_ack_ = false;
 		bool upgrade_ = false;
+		bool b64_ = false;
+		std::string origin_;
+
+		std::list<detail::packet> packets_;
+		std::map<std::string, std::function<void(xjson::obj_t&)>> event_handles_;
 		xnet::proactor_pool &pro_pool_;
-		std::function<void(session *)> close_callback_;
-		std::function<session &(const std::string &sid)> get_session_;
-		std::map<std::string, std::function<void()>> event_handles_;
-		std::function<bool(const std::string &, std::string &)> check_static_;
-		std::function<bool(const std::string &)> check_sid_;
-		std::function<bool(const std::string &)> check_transport_;
-		std::function<std::vector<std::string>(const std::string &)> get_upgrades_;
-		std::function<void(std::unique_ptr<request> &&)> on_request_;
+		std::function<void(const std::string &)> close_callback_;
+		std::function<void(std::shared_ptr<request>)> on_request_;
+		std::function<std::list<session*>()> get_sessions_;
 		std::function<std::size_t()> get_session_size_;
 		xnet::connection conn_;
 		std::string msg_;
 		std::string sid_ ;
-		std::unique_ptr<detail::polling> polling_;
-		std::list<std::unique_ptr<request>> requests_;
 
+		std::weak_ptr<request> polling_;
+
+		std::map<std::string, std::string > properties_;
 	};
 }

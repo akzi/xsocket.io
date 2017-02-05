@@ -40,7 +40,7 @@ namespace xsocket_io
 			int64_t packet_id_ = 0;
 			std::string nsp_;
 			bool binary_ = false;
-			bool is_string_ = false;;
+			bool is_string_ = true;;
 		};
 		inline std::string to_json(error_msg msg)
 		{
