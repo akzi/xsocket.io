@@ -90,8 +90,6 @@ namespace xsocket_io
 			buffer[buffer.size() - 1] = (char)255;
 			buffer.append(_packet.playload_);
 			return buffer;
-			assert(false);
-			return{};
 		}
 		inline std::list<packet> decode_packet(const std::string &data,bool binary)
 		{

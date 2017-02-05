@@ -110,6 +110,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\include\build_resp.hpp" />
     <ClInclude Include="..\include\detail\detail.hpp" />
     <ClInclude Include="..\include\detail\protoc.hpp" />
     <ClInclude Include="..\include\polling.hpp" />

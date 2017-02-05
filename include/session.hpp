@@ -7,7 +7,6 @@ namespace xsocket_io
 		session(xnet::proactor_pool &ppool)
 			:pro_pool_(ppool)
 		{
-			init();
 		}
 		template<typename ...Args>
 		void on(const std::string &event_name, std::function<void(Args &&...)> &&handle)
@@ -31,23 +30,97 @@ namespace xsocket_io
 		session &operator = (session &sess) = delete;
 
 		friend class xserver;
+		void on_request(request &req)
+		{
+			auto sid = req.get_query().get("sid");
+			if (sid != sid_)
+			{
+				if (!check_sid(sid))
+				{
+					auto origin = req.get_entry("Origin");
+					req.write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
+					return;
+				}
+				return on_request_(detach_request(&req));
+			}
+			auto method = req.method();
+			auto path = req.path();
+			auto b64 = !!req.get_query().get("b64").size();
+			auto transport = req.get_query().get("transport");
+			if (path == "/socket.io/")
+			{
+				if (method == "POST" && transport == "polling")
+				{
+					auto body = req.body();
+					on_packet(detail::decode_packet(body, false));
+					auto origin = req.get_entry("Origin");
+					req.write(build_resp("ok", 200, origin));
+				}
+			}
+			
+		}
+		bool check_add_user(const detail::packet &_packet)
+		{
+			if (_packet.playload_.size())
+			{
+				auto obj = xjson::build(_packet.playload_);
+				if (obj.get<std::string>(0) == "add user")
+				{
+					polling_->resp_login(get_session_size_());
+					return true;
+				}
+			}
+			return false;
+		}
+		void on_packet(const std::list<detail::packet> &_packet)
+		{
+			if (polling_)
+			{
+				for (auto itr : _packet)
+				{
+					if (itr.packet_type_ == detail::packet_type::e_ping)
+					{
+						polling_->pong();
+					}
+					else if (itr.packet_type_ == detail::packet_type::e_message)
+					{
+						if(check_add_user(itr))
+							continue;
+
+					}
+				}
+			}
+		}
 		void attach_request(std::unique_ptr<request> req)
 		{
+			auto ptr = req.get();
+			req->on_request_ = [this, ptr] {
+				on_request(*ptr);
+			};
+			req->close_callback_ = [this, ptr] {
+				detach_request(ptr);
+			};
+			on_request(*ptr);
 			requests_.emplace_back(std::move(req));
 		}
-		void attach_polling()
+		std::unique_ptr<request> detach_request(request *ptr)
 		{
-
+			for (auto itr = requests_.begin(); itr != requests_.end(); ++itr)
+			{
+				if (itr->get() == ptr)
+				{
+					auto req_ptr = std::move(*itr);
+					requests_.erase(itr);
+					return req_ptr;
+				}
+			}
+			return nullptr;
 		}
 		void on_heartbeat()
 		{
 
 		}
 		void on_packet(const detail::packet &_packet)
-		{
-
-		}
-		void on_packet(const std::list<detail::packet> &_packet)
 		{
 
 		}
@@ -92,6 +165,7 @@ namespace xsocket_io
 			polling_->del_timer_ = [this](auto &&...args) {return del_timer(std::forward<decltype(args)>(args)...); };
 			polling_->handle_req_ = [this](auto &&...args) {return handle_req(std::forward<decltype(args)>(args)...); };
 			polling_->close_callback_ = [this](auto &&...args) {return on_close(std::forward<decltype(args)>(args)...); };
+			polling_->sid_ = sid_;
 			polling_->init();
 		}
 		void init()
@@ -136,6 +210,8 @@ namespace xsocket_io
 		std::function<bool(const std::string &)> check_sid_;
 		std::function<bool(const std::string &)> check_transport_;
 		std::function<std::vector<std::string>(const std::string &)> get_upgrades_;
+		std::function<void(std::unique_ptr<request> &&)> on_request_;
+		std::function<std::size_t()> get_session_size_;
 		xnet::connection conn_;
 		std::string msg_;
 		std::string sid_ ;

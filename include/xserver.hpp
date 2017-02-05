@@ -46,25 +46,40 @@ namespace xsocket_io
 		void init()
 		{
 			proactor_pool_.regist_accept_callback([this](xnet::connection &&conn) {
-				auto id = uid();
 				std::unique_ptr<request> request_ptr(new request(std::move(conn)));
-				auto ptr = request_ptr.get();
-				request_ptr->on_request_ = [id, this, ptr]{
-					on_request(id, *ptr);
-				};
-				std::lock_guard<std::mutex> _lock_guard(requests_mutex_);
-				requests_.emplace(id, std::move(request_ptr));
+				attach_request(std::move(request_ptr));
 			});
 		}
-		auto detach_request(int64_t id)
+		int64_t attach_request(std::unique_ptr<request> &&request_ptr)
 		{
-			std::unique_ptr<request> req_ptr;
+			auto id = uid();
+			auto ptr = request_ptr.get();
+			request_ptr->on_request_ = [id, this, ptr] {
+				on_request(id, *ptr);
+			};
+			request_ptr->close_callback_ = [id, this] {
+				detach_request(id);
+			};
+			requests_.emplace(id, std::move(request_ptr));
+			return id;
+		}
+
+		std::unique_ptr<request> detach_request(int64_t id)
+		{
 			std::lock_guard<std::mutex> _lock_guard(requests_mutex_);
+
+			std::unique_ptr<request> req_ptr;
 			auto itr = requests_.find(id);
 			assert(itr != requests_.end());
 			req_ptr = std::move(itr->second);
 			requests_.erase(itr);
 			return req_ptr;
+		}
+		void on_request(std::unique_ptr<request> &&req_ptr)
+		{
+			auto ptr = req_ptr.get();
+			auto id = attach_request(std::move(req_ptr));
+			on_request(id, *ptr);
 		}
 		void on_request(int64_t id, request &req)
 		{
@@ -75,7 +90,8 @@ namespace xsocket_io
 				{
 					if (!check_sid(sid))
 					{
-						req.write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400));
+						auto origin = req.get_entry("Origin");
+						req.write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
 						return;
 					}
 					auto req_ptr = detach_request(id);
@@ -89,20 +105,32 @@ namespace xsocket_io
 			}
 			else if (req.method() == "GET")
 			{
+				auto url = req.url();
+				if (url.find('?') == url.npos)
+				{
+					std::string filepath;
+					if (check_static(url, filepath))
+					{
+						req.send_file(filepath);
+						return;
+					}
+				}
+				auto &query = req.get_query();
+				auto transport = query.get("transport");
+				auto sid = query.get("sid");
+				auto t = query.get("t");
+				auto path = req.path();
+				if (path == "/socket.io/")
+				{
+					if (sid.empty())
+					{
+						return handle_new_session(id, req);
+					}
+				}
 				
-				auto sid = req.get_query().get("sid");
-				if (sid.empty())
-				{
-					return new_session(id, req);
-				}
-				if (!check_sid(sid))
-				{
-					req.write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400));
-					return;
-				}
 			}
 		}
-		void new_session(int64_t id, request &req)
+		void handle_new_session(int64_t id, request &req)
 		{
 			using namespace detail;
 			auto sid = gen_sid();
@@ -121,54 +149,39 @@ namespace xsocket_io
 			_packet.is_string_ = true;
 			_packet.playload_type_ = playload_type::e_null1;
 			_packet.playload_ = obj.str();
-			req.write(build_resp(encode_packet(_packet), 200, req.get_entry("Origin"), _packet.binary_));
-			regist_session(sid, detach_request(id));
-			return;
-		}
-		std::string build_resp(const std::string & resp, int status, 
-			const std::string &origin = {}, 
-			bool binary = false)
-		{
-			xhttper::http_builder http_builder;
 
-			http_builder.set_status(status);
-			std::string content_type = "text/plain; charset=utf-8";
-			if (binary)
-				content_type = "application/octet-stream";
-			if (origin.size())
-			{
-				http_builder.append_entry("Access-Control-Allow-Credentials", "true");
-				http_builder.append_entry("Access-Control-Allow-Origin", origin);
-			}
-			http_builder.append_entry("Content-Length", std::to_string(resp.size()));
-			http_builder.append_entry("Content-Type", content_type);
-			http_builder.append_entry("Connection", "keep-alive");
-			http_builder.append_entry("Date", xutil::functional::get_rfc1123()());
+			req.write(build_resp(encode_packet(_packet), 200, req.get_entry("Origin"), _packet.binary_));
 			
-			auto buffer = http_builder.build_resp();
-			buffer.append(resp);
-			return  buffer;
+			new_session(sid, detach_request(id));
 		}
+		
 		std::string gen_sid()
 		{
 			static std::atomic_int64_t uid = 0;
 			auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
 			auto id = uid.fetch_add(1) + now;
 			auto sid = xutil::base64::encode(std::to_string(id));
-			sid.pop_back();
+			while(sid.size() && sid.back() =='=')
+				sid.pop_back();
 			return sid;
 		}
 
-
-		void regist_session(const std::string &sid, std::unique_ptr<request> &req)
+		std::size_t get_session_size()
+		{
+			return sessions_.size();
+		}
+		void new_session(const std::string &sid, std::unique_ptr<request> &req)
 		{
 			std::unique_ptr<session> sess(new session(proactor_pool_));
 			sess->check_static_ = [this](auto &&...args) { return check_static(std::forward<decltype(args)>(args)...); };
 			sess->get_upgrades_ = [this](auto &&...args) { return get_upgrades(std::forward<decltype(args)>(args)...); };
 			sess->check_sid_ = [this](auto &&...args) { return check_sid(std::forward<decltype(args)>(args)...); };
 			sess->close_callback_ = [this](auto &&...args) { return session_on_close(std::forward<decltype(args)>(args)...); };
+			sess->on_request_ = [this](auto &&...args) { return on_request(std::forward<decltype(args)>(args)...); };
+			sess->get_session_size_ = [this](auto &&...args) { return get_session_size(std::forward<decltype(args)>(args)...); };
 			sess->polling_.reset(new detail::polling(std::move(req)));
-			std::unique_lock<std::mutex> lock_g(session_mutex_);
+			sess->sid_ = sid;
+			sess->init();
 
 			auto ptr = sess.get();
 			do 
@@ -177,7 +190,8 @@ namespace xsocket_io
 				sessions_.emplace(sid, std::move(sess));
 			} while (0);
 			
-			connection_callback_(*ptr);
+			if(connection_callback_)
+				connection_callback_(*ptr);
 		}
 		bool check_static(const std::string& filename, std::string &filepath)
 		{
@@ -199,25 +213,16 @@ namespace xsocket_io
 		void session_on_close(session *sess)
 		{
 			std::unique_lock<std::mutex> lock_g(session_mutex_);
+			std::unique_ptr<session> ptr;
 			auto itr = sessions_.find(sess->get_sid());
 			if (itr != sessions_.end())
 			{
+				ptr = std::move(itr->second);
 				sessions_.erase(itr);
 				return;
 			}
-				
-			for (auto itr = session_cache_.begin(); itr != session_cache_.end(); ++itr)
-			{
-				if (itr->get() == sess)
-				{
-					auto sess_ptr = std::move(*itr);
-					session_cache_.erase(itr);
-					lock_g.unlock();
-
-					handle_session_close_(*sess);
-					return;
-				}
-			}
+			if(handle_session_close_)
+				handle_session_close_(*ptr);
 		}
 		std::vector<std::string> get_upgrades(const std::string &transport)
 		{
@@ -225,8 +230,6 @@ namespace xsocket_io
 		}
 		std::mutex session_mutex_;
 		std::map<std::string, std::unique_ptr<session>> sessions_;
-		std::list<std::unique_ptr<session>> session_cache_;
-		
 
 		std::mutex requests_mutex_;
 		std::map<int64_t, std::unique_ptr<request>> requests_;
@@ -238,7 +241,7 @@ namespace xsocket_io
 		handle_session_close_t handle_session_close_;
 		std::string static_path_;
 
-		uint32_t ping_interval_ = 25000;
-		uint32_t ping_timeout_ = 60000;
+		uint32_t ping_interval_ = 2500;
+		uint32_t ping_timeout_ = 6000;
 	};
 }

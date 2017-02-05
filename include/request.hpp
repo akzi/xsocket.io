@@ -16,7 +16,7 @@ namespace xsocket_io
 		}
 		~request()
 		{
-
+			conn_.close();
 		}
 		std::string url()
 		{
@@ -310,8 +310,6 @@ namespace xsocket_io
 				if (!len)
 					return on_close();
 				recv_callback(data, len);
-				if (is_close_)
-					return on_close();
 			});
 		}
 		void recv_callback(char *data, std::size_t len)
@@ -343,10 +341,17 @@ namespace xsocket_io
 		void on_request()
 		{
 			xcoroutine::create([this] {
-				on_request_();
-				reset();
-				if(!is_close_)
-					conn_.async_recv_some();
+				try
+				{
+					on_request_();
+					reset();
+					if (!is_close_)
+						conn_.async_recv_some();
+				}
+				catch (std::exception &e)
+				{
+					std::cout <<e.what() << std::endl;
+				}
 			});
 			
 		}
@@ -375,6 +380,7 @@ namespace xsocket_io
 		void on_close()
 		{
 			conn_.close();
+			assert(close_callback_);
 			close_callback_();
 		}
 

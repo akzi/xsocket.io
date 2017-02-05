@@ -115,39 +115,13 @@ namespace xsocket_io
 				buffer.pop_back();
 				return buffer;
 			}
-			std::string build_resp(const std::string &resp, int status = 200, bool binary = false)
-			{
-				xhttper::http_builder http_builder;
-
-				std::string content_type = "text/plain; charset=utf-8";
-				if (binary)
-					content_type = "application/octet-stream";
-				http_builder.set_status(status);
-				
-				
-				http_builder.append_entry("Content-Length", std::to_string(resp.size()));
-				http_builder.append_entry("Content-Type", content_type);
-				http_builder.append_entry("Connection", "keep-alive");
-				http_builder.append_entry("Date", xutil::functional::get_rfc1123()());
-
-				http_builder.append_entry("Set-Cookie", make_cookie("io", sid_, {}));
-				
-				if (request_->get_entry("Origin").size())
-				{
-					http_builder.append_entry("Access-Control-Allow-Credentials", "true");
-					http_builder.append_entry("Access-Control-Allow-Origin",request_->get_entry("Origin"));
-				}
-
-				auto buffer = http_builder.build_resp();
-				buffer.append(resp);
-				return  buffer;
-			}
 			bool check_sid()
 			{
 				auto sid = request_->get_query().get("sid");
 				if (sid_ != sid)
 				{
-					request_->write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400));
+					auto origin = request_->get_entry("Origin");
+					request_->write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
 					return false;
 				}
 				return true;
@@ -163,18 +137,19 @@ namespace xsocket_io
 					_packet.is_string_ = true;
 					connect_ack_ = true;
 					on_sid_(sid_);
-					request_->write(build_resp(encode_packet(_packet), 200, _packet.binary_));
+					auto origin = request_->get_entry("Origin");
+					request_->write(build_resp(encode_packet(_packet), 200, origin, _packet.binary_));
 					false;
 				}
 				return true;
 			}
 			void on_polling_req()
 			{
-				std::cout << "get polling:" << this << std::endl;
 				if (!check_sid())
 					return;
 				if (!check_connect_ack())
 					return;
+				origin_ = request_->get_entry("origin");
 			}
 			void pong()
 			{
@@ -182,9 +157,10 @@ namespace xsocket_io
 				_packet.packet_type_ = packet_type::e_pong;
 				_packet.binary_ = !!!request_->get_entry("b64").size();
 				_packet.is_string_ = true;
-				request_->write(build_resp(encode_packet(_packet), 200, _packet.binary_));
+				auto origin = request_->get_entry("Origin");
+				request_->write(build_resp(encode_packet(_packet), 200, origin, _packet.binary_));
 			}
-			void resp_login()
+			void resp_login(std::size_t num)
 			{
 				packet _packet;
 				_packet.is_string_ = true;
@@ -192,46 +168,24 @@ namespace xsocket_io
 				xjson::obj_t obj;
 				obj.add("login");
 				xjson::obj_t members;
-				members["members"] = 2;
+				members["members"] = num;
 				obj.add(members);
 				_packet.playload_ = obj.str();
 				_packet.packet_type_ = packet_type::e_message;
 				_packet.playload_type_ = playload_type::e_event;
-				request_->write(build_resp(encode_packet(_packet), 200, _packet.binary_));
+
+				request_->write(build_resp(encode_packet(_packet), 200, origin_, _packet.binary_));
 			}
-			void check_add_user(const packet &_packet)
-			{
-				if (!add_user_ && _packet.playload_.size())
-				{
-					auto obj = xjson::build(_packet.playload_);
-					if (obj.get<std::string>(0) == "add user")
-					{
-						resp_login();
-					}
-					add_user_ = true;
-				}
-			}
-			void on_packet(const packet &_packet)
-			{
-				if (_packet.packet_type_ == packet_type::e_ping)
-				{
-					pong();
-				}
-				else if (_packet.packet_type_ == packet_type::e_message)
-				{
-					check_add_user(_packet);
-				}
-			}
-			void on_packet(const std::list<detail::packet> &_packet)
-			{
-				on_packet_(_packet);
-				request_->write(build_resp("ok"));
-			}
+			
+			
 			void on_request()
 			{
+				std::cout << "polling:"<< request_.get() << std::endl;
 				auto url = request_->url();
+				auto method = request_->method();
+				auto origin = request_->get_entry("Origin");
 				std::cout << "URL: " << url << std::endl;;
-				if (request_->method() == "GET")
+				if (method == "GET")
 				{
 					if (url.find('?') == url.npos)
 					{
@@ -240,17 +194,37 @@ namespace xsocket_io
 					}
 					if (request_->path() != "/socket.io/")
 					{
-						request_->write(build_resp("Cannot GET " + url, 404));
+						request_->write(build_resp("Cannot GET " + url, 404, origin));
 						return;
 					}
 					on_polling_req();
 				}
-				else if (request_->method() == "POST")
+				else if (method == "POST")
 				{
-					on_packet(decode_packet(request_->body(), false));
+					if (request_->path() == "/socket.io/")
+					{ 
+						if (!check_sid())
+							return;
+						auto body = request_->body();
+						auto packets = detail::decode_packet(body, false);
+						auto origin = request_->get_entry("Origin");
+						for (auto itr: packets)
+						{
+							if (itr.packet_type_ == packet_type::e_close)
+							{
+								request_->write(build_resp("ok", 200, origin, false));
+								return on_close();
+							}
+							else if (itr.packet_type_ == packet_type::e_ping)
+							{
+								pong();
+							}
+						}
+						request_->write(build_resp("ok", 200, origin, false));
+						
+					}
 				}
 			}
-			
 
 			bool check_static(const std::string &url)
 			{
@@ -270,7 +244,9 @@ namespace xsocket_io
 			void on_close()
 			{
 				close_callback_();
+				throw std::logic_error("close_request");
 			}
+
 			int32_t ping_timeout_ = 12000;
 			bool support_binary_ = false;
 			bool add_user_ = false;
@@ -279,7 +255,7 @@ namespace xsocket_io
 			
 			std::size_t	timer_id_ = 0;
 			std::string sid_;
-
+			std::string origin_;
 			xhttper::query query_;
 		
 			std::list<packet> packet_buffers_;
