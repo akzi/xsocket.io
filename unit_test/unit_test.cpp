@@ -73,8 +73,7 @@ XTEST_SUITE(main)
 		server.start();
 		server.set_static("public/");
 
-		server.of("/chat")
-			.on_connection([&] (xsocket_io::socket &sock) {
+		server.on_connection([&] (xsocket_io::socket &sock) {
 
 			sock.on("add user", [&](xjson::obj_t &obj) {
 				

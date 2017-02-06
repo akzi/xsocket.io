@@ -25,8 +25,7 @@ namespace xsocket_io
 			std::set<std::string> rooms_;
 			socket *socket_;
 		};
-		socket(xnet::proactor_pool &ppool)
-			:pro_pool_(ppool)
+		socket()
 		{
 		}
 		~socket()
@@ -119,7 +118,8 @@ namespace xsocket_io
 			};
 			sameSite sameSite_ = sameSite::Null;
 		};
-		void broadcast_room(std::set<std::string> &rooms, detail::packet &_packet)
+		void broadcast_room(std::set<std::string> &rooms, 
+			detail::packet &_packet)
 		{
 			std::set<std::string> ids;
 			for (auto &itr : rooms)
@@ -232,22 +232,28 @@ namespace xsocket_io
 		{
 			for (auto &itr : _packet)
 			{
-				if (itr.packet_type_ == detail::packet_type::e_ping)
+				if (itr.packet_type_ == 
+					detail::packet_type::e_ping)
 				{
 					pong();
+					set_timeout();
 				}
-				else if (itr.packet_type_ == detail::packet_type::e_close)
+				else if (itr.packet_type_ == 
+					detail::packet_type::e_close)
 				{
 					return on_close();
 				}
-				else if (itr.packet_type_ == detail::packet_type::e_message)
+				else if (itr.packet_type_ == 
+					detail::packet_type::e_message)
 				{
-					if (itr.playload_type_ == detail::playload_type::e_event)
+					if (itr.playload_type_ == 
+						detail::playload_type::e_event)
 					{
 						if(nsp_ == itr.nsp_)
 							on_message(itr);
 					}
-					else if (itr.playload_type_ == detail::playload_type::e_connect)
+					else if (itr.playload_type_ ==
+						detail::playload_type::e_connect)
 					{
 						nsp_ = itr.nsp_;
 					}
@@ -286,8 +292,10 @@ namespace xsocket_io
 			if (on_connection_)
 			{
 				if (!on_connection_(nsp_, *this))
-					connect_ack(nsp_, "\"Invalid namespace\"", detail::playload_type::e_error);
-				else
+					connect_ack(nsp_, 
+						"\"Invalid namespace\"", 
+						detail::playload_type::e_error);
+				else if(nsp_ != "/")
 					connect_ack(nsp_);
 				on_connection_ = nullptr;
 			}
@@ -312,7 +320,8 @@ namespace xsocket_io
 			connect_ack(nsp_);
 		}
 
-		void regist_event(const std::string &event_name, std::function<void(xjson::obj_t&obj)> &&handle_)
+		void regist_event(const std::string &event_name,
+			std::function<void(xjson::obj_t&obj)> &&handle_)
 		{
 			std::function<void(xjson::obj_t&obj)> handle;
 			auto func = [handle = std::move(handle_)](xjson::obj_t &obj){
@@ -340,23 +349,44 @@ namespace xsocket_io
 		}
 		void on_close()
 		{
-			auto itr = event_handles_.find("disconnect");
-			if (itr != event_handles_.end())
-				itr->second(xjson::obj_t());
+			if (!on_connection_)
+			{
+				auto itr = event_handles_.find("disconnect");
+				if (itr != event_handles_.end())
+					itr->second(xjson::obj_t());
+			}
 			close_callback_(sid_);
 		}
+		void set_timeout()
+		{
+			if (timer_id_)
+				cancel_timer_(timer_id_);
 
+			timer_id_ = set_timer_(timeout_, [this] {
+				detail::packet _packet;
+				_packet.packet_type_ = detail::e_close;
+				send_packet(_packet);
+				timer_id_ = 0;
+				on_close();
+				return false;
+			});
+		}
 		bool connect_ack_ = false;
 		bool upgrade_ = false;
 		bool b64_ = false;
+		int32_t timeout_;
 		std::string origin_;
 
 		std::list<detail::packet> packets_;
 		std::map<std::string, std::function<void(xjson::obj_t&)>> event_handles_;
-		xnet::proactor_pool &pro_pool_;
 		std::function<void(const std::string &)> close_callback_;
 		std::function<void(std::shared_ptr<request>)> on_request_;
 		std::function<std::map<std::string, std::shared_ptr<socket>>&()> get_sockets_;
+		
+		std::function<std::size_t(int32_t, std::function<bool()> &&)> set_timer_;
+		std::function<void(std::size_t)> cancel_timer_;
+		std::size_t timer_id_ = 0;
+
 		xnet::connection conn_;
 		std::string sid_ ;
 		std::string nsp_ = "/";

@@ -121,15 +121,6 @@ namespace xsocket_io
 			else if (req->method() == "GET")
 			{
 				auto url = req->url();
-				if (url.find('?') == url.npos)
-				{
-					std::string filepath;
-					if (check_static(url, filepath))
-					{
-						req->send_file(filepath);
-						return;
-					}
-				}
 				if (path == "/socket.io/" && transport == "polling")
 				{
 					if (sid.empty())
@@ -140,10 +131,18 @@ namespace xsocket_io
 					if (!_session)
 					{
 						auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
-						req->write(build_resp(msg, 400, origin));
-						return;
+						return req->write(build_resp(msg, 400, origin));
 					}
 					return _session->on_polling(req);
+				}
+				if (url.find('?') == url.npos)
+				{
+					std::string filepath;
+					if (check_static(url, filepath))
+					{
+						req->send_file(filepath);
+						return;
+					}
 				}
 				if(handle_request_)
 					handle_request_(*req);
@@ -168,7 +167,11 @@ namespace xsocket_io
 			_packet.playload_type_ = playload_type::e_null1;
 			_packet.playload_ = obj.str();
 
-			req->write(build_resp(encode_packet(_packet), 200, req->get_entry("Origin"), _packet.binary_));
+			req->write(build_resp(
+				encode_packet(_packet), 
+				200, 
+				req->get_entry("Origin"), 
+				_packet.binary_));
 			
 			new_socket(sid);
 		}
@@ -176,7 +179,8 @@ namespace xsocket_io
 		std::string gen_sid()
 		{
 			static std::atomic_int64_t uid = 0;
-			auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+			auto now = std::chrono::high_resolution_clock::now().
+				time_since_epoch().count();
 			auto id = uid.fetch_add(1) + now;
 			auto sid = xutil::base64::encode(std::to_string(id));
 			while(sid.size() && sid.back() =='=')
@@ -186,7 +190,7 @@ namespace xsocket_io
 
 		void new_socket(const std::string &sid)
 		{
-			std::shared_ptr<socket> sess(new socket(proactor_pool_));
+			std::shared_ptr<socket> sess(new socket());
 			sess->close_callback_ = [this](auto &&...args) { 
 				return socket_on_close(std::forward<decltype(args)>(args)...); 
 			};
@@ -202,8 +206,16 @@ namespace xsocket_io
 			sess->get_sockets_= [this]() ->auto &{
 				return sockets_;
 			};
+			sess->set_timer_ = [this](int32_t timeout, std::function<bool()> &&handle)->
+				std::size_t {
+				return proactor_pool_.set_timer(timeout, std::move(handle));
+			};
+			sess->cancel_timer_ = [this](std::size_t timerid) {
+				return proactor_pool_.cancel_timer(timerid);
+			};
 			
 			sess->sid_ = sid;
+			sess->timeout_ = ping_timeout_;
 			sess->init();
 
 			auto ptr = sess.get();
