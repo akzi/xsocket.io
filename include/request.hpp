@@ -60,20 +60,17 @@ namespace xsocket_io
 		}
 		std::size_t content_length()
 		{
-			if (content_length_ == (std::size_t) - 1)
-			{
-				using strncasecmper = xutil::functional::strncasecmper;
-				std::string len = http_parser_.get_header<strncasecmper>("Content-Length");
-				if (len.empty())
-				{
-					content_length_ = 0;
-					return content_length_;
-				}
-				content_length_ = std::strtoul(len.c_str(), 0, 10);
-			}
-			return content_length_;
+			return get_content_length();
 		}
 		std::string body()
+		{
+			return get_body();
+		}
+	private:
+		friend class detail::polling;
+		friend class xserver;
+		friend class socket;
+		std::string get_body()
 		{
 			int i = 0;
 			body_ = http_parser_.get_string();
@@ -105,11 +102,21 @@ namespace xsocket_io
 			}
 			return body_;
 		}
-	private:
-		friend class detail::polling;
-		friend class xserver;
-		friend class socket;
-
+		std::size_t get_content_length()
+		{
+			if (content_length_ == (std::size_t) - 1)
+			{
+				using strncasecmper = xutil::functional::strncasecmper;
+				std::string len = http_parser_.get_header<strncasecmper>("Content-Length");
+				if (len.empty())
+				{
+					content_length_ = 0;
+					return content_length_;
+				}
+				content_length_ = std::strtoul(len.c_str(), 0, 10);
+			}
+			return content_length_;
+		}
 		void do_send_file(const std::string &filepath)
 		{
 			using get_extension = xutil::functional::get_extension;

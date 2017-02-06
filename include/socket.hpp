@@ -1,7 +1,7 @@
 #pragma once
 namespace xsocket_io
 {
-	class socket
+	class socket: public std::enable_shared_from_this<socket>
 	{
 	public:
 		struct broadcast_t
@@ -9,22 +9,31 @@ namespace xsocket_io
 			template<typename T>
 			void emit(const std::string &event_name, const T &msg)
 			{
-				auto sessions = get_sessions_();
-				for (auto itr: sessions)
-				{
-					if(itr->sid_ == sid_)
-						continue;
-					itr->emit(event_name, msg);
-				}
+				socket_->do_broadcast(rooms_, event_name, msg);
+				rooms_.clear();
+			}
+			void to(const std::string &name)
+			{
+				rooms_.insert(name);
+			}
+			void in(const std::string &name)
+			{
+				rooms_.insert(name);
 			}
 		private:
 			friend class socket;
-			std::string sid_;
-			std::function<std::list<socket*>()> get_sessions_;
+			std::set<std::string> rooms_;
+			socket *socket_;
 		};
 		socket(xnet::proactor_pool &ppool)
 			:pro_pool_(ppool)
 		{
+		}
+		~socket()
+		{
+			auto rooms = rooms_;
+			for (auto itr : rooms)
+				leave(itr);
 		}
 		template<typename Lambda>
 		void on(const std::string &event_name, const Lambda &lambda)
@@ -45,14 +54,8 @@ namespace xsocket_io
 			_packet.playload_ = obj.str();
 			_packet.binary_ = !b64_;
 			_packet.nsp_ = nsp_;
-			auto _request = polling_.lock();
-			if (_request)
-			{
-				auto msg = detail::encode_packet(_packet);
-				_request->write(build_resp(msg, 200, origin_, !b64_));
-				return;
-			}
-			packets_.emplace_back(_packet);
+
+			send_packet(_packet);
 		}
 		
 		std::string get_sid()
@@ -66,6 +69,30 @@ namespace xsocket_io
 		std::string get(const std::string &key)
 		{
 			return properties_[key];
+		}
+		void join(const std::string &room)
+		{
+			if (rooms_.find(room) == rooms_.end())
+			{
+				rooms_.insert(room);
+				join_room_(room, shared_from_this());
+				return;
+			}
+		}
+		void leave(const std::string &room)
+		{
+			rooms_.erase(room);
+			leave_room_(room, shared_from_this());
+		}
+		socket &in(const std::string &room)
+		{
+			in_rooms_.insert(room);
+			return *this;
+		}
+		socket &to(const std::string &room)
+		{
+			in_rooms_.insert(room);
+			return *this;
 		}
 		broadcast_t broadcast;
 	private:
@@ -92,7 +119,49 @@ namespace xsocket_io
 			sameSite sameSite_ = sameSite::Null;
 		};
 
-
+		template<typename T>
+		void do_broadcast(std::set<std::string> &rooms_, const std::string &event_name, const T &msg)
+		{
+			if (rooms_.empty())
+			{
+				auto sockets = get_sockets();
+				for (auto itr : sockets)
+				{
+					if (itr.first == sid_)
+						continue;
+					itr.second->emit(event_name, msg);
+				}
+				return;
+			}
+			std::set<std::string> ids;
+			for (auto &itr : rooms_)
+			{
+				auto sockets = get_socket_from_room_(itr);
+				if (sockets.empty())
+					continue;
+				for (auto &sock: sockets)
+				{
+					if (ids.find(sock.first) == ids.end())
+					{
+						auto ptr = sock.second.lock();
+						if (ptr)
+							ptr->emit(event_name, msg);
+						ids.insert(sock.first);
+					}
+				}
+			}
+		}
+		void send_packet(const detail::packet &_packet)
+		{
+			auto _request = polling_.lock();
+			if (_request)
+			{
+				auto msg = detail::encode_packet(_packet);
+				_request->write(build_resp(msg, 200, origin_, !b64_));
+				return;
+			}
+			packets_.emplace_back(_packet);
+		}
 		std::string make_cookie(const std::string &key, const std::string &value, cookie_opt opt)
 		{
 			std::string buffer;
@@ -238,8 +307,7 @@ namespace xsocket_io
 
 		void init()
 		{
-			broadcast.sid_ = sid_;
-			broadcast.get_sessions_ = get_sessions_;
+			broadcast.socket_ = this;
 			connect_ack(nsp_);
 		}
 
@@ -287,7 +355,7 @@ namespace xsocket_io
 		xnet::proactor_pool &pro_pool_;
 		std::function<void(const std::string &)> close_callback_;
 		std::function<void(std::shared_ptr<request>)> on_request_;
-		std::function<std::list<socket*>()> get_sessions_;
+		std::function<std::map<std::string, std::shared_ptr<socket>>&()> get_sessions_;
 		xnet::connection conn_;
 		std::string sid_ ;
 		std::string nsp_ = "/";
@@ -296,5 +364,14 @@ namespace xsocket_io
 		std::map<std::string, std::string > properties_;
 
 		std::function<bool(const std::string &, socket&)> on_connection_;
+		
+
+		std::set<std::string> rooms_;
+		std::set<std::string> in_rooms_;
+
+		std::function<void(const std::string &, std::shared_ptr<socket>&)> join_room_;
+		std::function<void(const std::string &, std::shared_ptr<socket>&)> leave_room_;
+
+		std::function<std::map<const std::string&, std::weak_ptr<socket>>(const std::string &)> get_socket_from_room_;
 	};
 }
