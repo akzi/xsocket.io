@@ -115,7 +115,7 @@
     <ClInclude Include="..\include\detail\protoc.hpp" />
     <ClInclude Include="..\include\request.hpp" />
     <ClInclude Include="..\include\response.hpp" />
-    <ClInclude Include="..\include\session.hpp" />
+    <ClInclude Include="..\include\socket.hpp" />
     <ClInclude Include="..\include\xserver.hpp" />
     <ClInclude Include="..\include\xsocket.io.hpp" />
   </ItemGroup>

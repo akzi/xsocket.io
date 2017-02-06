@@ -30,9 +30,6 @@
     <ClInclude Include="..\include\xserver.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="..\include\session.hpp">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="..\include\request.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -40,6 +37,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="..\include\build_resp.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\socket.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

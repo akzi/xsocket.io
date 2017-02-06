@@ -108,7 +108,7 @@ namespace xsocket_io
 	private:
 		friend class detail::polling;
 		friend class xserver;
-		friend class session;
+		friend class socket;
 
 		void do_send_file(const std::string &filepath)
 		{

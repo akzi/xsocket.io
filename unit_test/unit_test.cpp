@@ -49,7 +49,7 @@ XTEST_SUITE(base64)
 		std::string result2;
 		assert(xutil::base64::decode(str, result2));
 
-		str = "AAH/Mw==";
+		str = "AAL/NDAAB/80MC9jaGF0";
 		std::string result3;
 		assert(xutil::base64::decode(str, result3));
 
@@ -73,47 +73,49 @@ XTEST_SUITE(main)
 		server.start();
 		server.set_static("public/");
 
-		server.on_connection([&] (xsocket_io::session &sess) {
+		server.of("/chat")
+			.on_connection([&] (xsocket_io::socket &sock) {
 
-			sess.on("add user", [&](xjson::obj_t &obj) {
+			sock.on("add user", [&](xjson::obj_t &obj) {
 				
-				if (sess.get("add_user").size()) return;
-				sess.set("add_user","true");
+				if (sock.get("add_user").size()) return;
+				sock.set("add_user","true");
 
 				sessions++;
-				sess.set("username", obj.get<std::string>());
-				sess.emit("login", login{ sessions });
-				sess.broadcast.emit("user joined",  user_join{ 
-					sess.get("username"),sessions 
+				sock.set("username", obj.get<std::string>());
+				sock.emit("login", login{ sessions });
+				sock.broadcast.emit("user joined",  user_join{ 
+					sock.get("username"),sessions 
 				});
 			});
 
-			sess.on("new message", [&](xjson::obj_t &obj) {
+			sock.on("new message", [&](xjson::obj_t &obj) {
 				new_message msg;
 				msg.message = obj.get<std::string>();
-				msg.username = sess.get("username");
-				sess.broadcast.emit("new message", msg);
+				msg.username = sock.get("username");
+				sock.broadcast.emit("new message", msg);
 			});
 
-			sess.on("stop typing", [&sess] {
-				sess.broadcast.emit("stop typing", stop_type{ 
-					sess.get("username") 
+			sock.on("stop typing", [&sock] {
+				sock.broadcast.emit("stop typing", stop_type{ 
+					sock.get("username") 
 				});
 			});
-			sess.on("typing", [&sess] {
-				sess.broadcast.emit("typing", typing{ 
-					sess.get("username") 
+			sock.on("typing", [&sock] {
+				sock.broadcast.emit("typing", typing{ 
+					sock.get("username") 
 				});
 			});
 
-			sess.on("disconnect", [&] {
-				if (sess.get("add_user").size())
+			sock.on("disconnect", [&] {
+				if (sock.get("add_user").size())
 					sessions--;
-				sess.broadcast.emit("user left", user_left{ 
-					sess.get("username"), sessions 
+				sock.broadcast.emit("user left", user_left{ 
+					sock.get("username"), sessions 
 				});
 			});
 		});
+
 		getchar();
 	}
 }

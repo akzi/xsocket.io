@@ -4,16 +4,32 @@ namespace xsocket_io
 	class xserver
 	{
 	public:
-		using handle_request_t = std::function<void(request, response)> ;
+		using handle_request_t = std::function<void(request&)> ;
+		struct namespaces
+		{
+			namespaces(xserver &_xserver, const std::string &nsp)
+				:xserver_(_xserver)
+				, nsp_(nsp)
+			{
+			}
+			template<typename T>
+			xserver& on_connection(const T &handle)
+			{
+				xserver_.on_connection_handles_[nsp_] = handle;
+				return xserver_;
+			}
+		private:
+			std::string nsp_;
+			xserver &xserver_;
+		};
 		xserver()
 			:proactor_pool_(1)
 		{
 			init();
 		}
-
-		void on_connection(const std::function<void(session&)> &handle)
+		void on_connection(const std::function<void(socket&)> &handle)
 		{
-			connection_callback_ = handle;
+			on_connection_handles_["/"] = handle;
 		}
 		void on_request(const handle_request_t &handle)
 		{
@@ -31,7 +47,12 @@ namespace xsocket_io
 		{
 			static_path_ = path;
 		}
+		namespaces of(const std::string &nsp)
+		{
+			return namespaces(*this, nsp);
+		}
 	private:
+
 		int64_t uid()
 		{
 			static std::atomic_int64_t uid_ = 0;
@@ -89,7 +110,8 @@ namespace xsocket_io
 				{
 					if (!_session)
 					{
-						req->write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
+						auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
+						req->write(build_resp(msg, 400, origin));
 						return;
 					}
 					_session->on_packet(detail::decode_packet(req->body(), false));
@@ -112,11 +134,12 @@ namespace xsocket_io
 				{
 					if (sid.empty())
 					{
-						return new_session(req);
+						return new_socket(req);
 					}
 					if (!_session)
 					{
-						req->write(build_resp(detail::to_json(detail::error_msg::e_session_id_unknown), 400, origin));
+						auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
+						req->write(build_resp(msg, 400, origin));
 						return;
 					}
 					_session->on_polling(req);
@@ -124,7 +147,7 @@ namespace xsocket_io
 
 			}
 		}
-		void new_session(std::shared_ptr<request> &req)
+		void new_socket(std::shared_ptr<request> &req)
 		{
 			using namespace detail;
 			auto sid = gen_sid();
@@ -145,7 +168,7 @@ namespace xsocket_io
 
 			req->write(build_resp(encode_packet(_packet), 200, req->get_entry("Origin"), _packet.binary_));
 			
-			new_session(sid);
+			new_socket(sid);
 		}
 		
 		std::string gen_sid()
@@ -159,12 +182,21 @@ namespace xsocket_io
 			return sid;
 		}
 
-		void new_session(const std::string &sid)
+		void new_socket(const std::string &sid)
 		{
-			std::shared_ptr<session> sess(new session(proactor_pool_));
-			sess->close_callback_ = [this](auto &&...args) { return session_on_close(std::forward<decltype(args)>(args)...); };
-			sess->on_request_ = [this](auto &&...args) { return on_request(std::forward<decltype(args)>(args)...); };
-			sess->get_sessions_ = [this] {return get_session(); };
+			std::shared_ptr<socket> sess(new socket(proactor_pool_));
+			sess->close_callback_ = [this](auto &&...args) { 
+				return socket_on_close(std::forward<decltype(args)>(args)...); 
+			};
+			sess->on_request_ = [this](auto &&...args) { 
+				return on_request(std::forward<decltype(args)>(args)...); 
+			};
+			sess->on_connection_ = [this](auto &&...args) {
+				return on_connection_callback(std::forward<decltype(args)>(args)...);
+			};
+			sess->get_sessions_ = [this] { 
+				return get_socket(); 
+			};
 			sess->sid_ = sid;
 			sess->init();
 
@@ -175,8 +207,6 @@ namespace xsocket_io
 				sessions_.emplace(sid, std::move(sess));
 			} while (0);
 			
-			if(connection_callback_)
-				connection_callback_(*ptr);
 		}
 		bool check_static(const std::string& filename, std::string &filepath)
 		{
@@ -194,23 +224,23 @@ namespace xsocket_io
 			std::unique_lock<std::mutex> lock_g(session_mutex_);
 			return sessions_.find(sid) != sessions_.end();
 		}
-		std::shared_ptr<session> find_session(const std::string &sid)
+		std::shared_ptr<socket> find_session(const std::string &sid)
 		{
 			auto itr = sessions_.find(sid);
 			if (itr == sessions_.end())
 				return nullptr;
 			return itr->second;
 		}
-		std::list<session*> get_session()
+		std::list<socket*> get_socket()
 		{
-			std::list<session*> sessions;
+			std::list<socket*> sessions;
 			for (auto& itr : sessions_)
 				sessions.push_back(itr.second.get());
 			return sessions;
 		}
-		void session_on_close(const std::string &sid)
+		void socket_on_close(const std::string &sid)
 		{
-			std::shared_ptr<session> ptr;
+			std::shared_ptr<socket> ptr;
 			auto itr = sessions_.find(sid);
 			if (itr != sessions_.end())
 			{
@@ -222,13 +252,22 @@ namespace xsocket_io
 		{
 			return {};
 		}
+		bool on_connection_callback(const std::string &nsp, socket &sock)
+		{
+			auto itr = on_connection_handles_.find(nsp);
+			if (itr != on_connection_handles_.end())
+				itr->second(sock);
+			else 
+				return false;
+			return true;
+		}
 		std::mutex session_mutex_;
-		std::map<std::string, std::shared_ptr<session>> sessions_;
+		std::map<std::string, std::shared_ptr<socket>> sessions_;
 
 		std::mutex requests_mutex_;
 		std::map<int64_t, std::shared_ptr<request>> requests_;
 
-		std::function<void(session &)> connection_callback_;
+		std::map<std::string, std::function<void(socket&)>> on_connection_handles_;
 		xnet::proactor_pool proactor_pool_;
 
 		handle_request_t handle_request_;

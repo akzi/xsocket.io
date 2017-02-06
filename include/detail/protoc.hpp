@@ -37,8 +37,8 @@ namespace xsocket_io
 			std::string playload_;
 			packet_type packet_type_ = packet_type::e_null0;
 			playload_type playload_type_ = playload_type::e_null1;
-			int64_t packet_id_ = 0;
-			std::string nsp_;
+			int64_t id_ = 0;
+			std::string nsp_= "/";
 			bool binary_ = false;
 			bool is_string_ = true;;
 		};
@@ -57,20 +57,34 @@ namespace xsocket_io
 		}
 		inline std::string encode_packet(const packet &_packet)
 		{
-			std::string playload;
+			auto nsp = false;
+			std::string playload = std::to_string(_packet.packet_type_);
+
 			if (_packet.playload_type_ != playload_type::e_null1)
 			{
-				playload =
-					std::to_string(_packet.packet_type_) + 
-					std::to_string(_packet.playload_type_) + 
-					_packet.playload_;
+				playload += std::to_string(_packet.playload_type_);
 			}
-			else
-				playload = std::to_string(_packet.packet_type_) + _packet.playload_;
+			if (_packet.nsp_ != "/")
+			{
+				playload += _packet.nsp_;
+				nsp = true;
+			}
+			if (_packet.id_ != 0)
+			{
+				nsp = false;
+				playload.push_back(',');
+				playload.append(std::to_string(_packet.id_));
+			}
+			if (_packet.playload_.size())
+			{
+				if (nsp)
+					playload.push_back(',');
+				playload += _packet.playload_;
+			}
 
 			if (!_packet.binary_)
 			{
-				return std::to_string(_packet.playload_.size() + 1) + ":" + _packet.playload_;
+				return std::to_string(_packet.playload_.size()) + ":" + _packet.playload_;
 			}
 			
 			auto playload_len = std::to_string(playload.size());
@@ -97,7 +111,7 @@ namespace xsocket_io
 
 			#define assert_ptr()\
 			if(pos >= end) \
-				throw std::logic_error("parse packet len error");
+				throw std::logic_error("parse packet error");
 
 			std::list<packet> packets;
 
@@ -124,16 +138,18 @@ namespace xsocket_io
 					std::string len_str;
 					if (*pos != 0 && *pos != 1)
 						throw std::runtime_error("packet error");
-					bool playload_binary = *pos == 1;
+					_packet.is_string_ = *pos == 0;
 					++pos;
 					do
 					{
 						len_str.push_back(*pos);
+						++pos;
+						assert_ptr();
 					} while (*pos != 255);
 
 					auto len = std::strtol(len_str.c_str(), nullptr, 10);
 					if (!len)
-						throw std::logic_error("parse packet len error");
+						throw std::logic_error("packet len error");
 					++pos;
 					assert_ptr();
 				}
@@ -144,24 +160,57 @@ namespace xsocket_io
 				_packet_type = static_cast<packet_type>(ch);
 				++pos;
 				len--;
-				if (_packet_type == packet_type::e_message)
+				if (len > 0)
 				{
 					len--;
 					assert_ptr();
 					ch = *pos - '0';
 					if (ch < e_connect || ch > e_binary_ack)
-						throw std::logic_error("parse playload type error");
+						throw std::logic_error("pakcet playload_type error");
 					_playload_type = static_cast<playload_type>(ch);
 					++pos;
-					assert_ptr();
 					if (len > 0)
 					{
-						_packet.playload_.append(pos, len);
-						pos += len;
+						assert_ptr();
+						//parse nsp
+						if (*pos == '/')
+						{
+							_packet.nsp_.clear();
+							do
+							{
+								--len;
+								if (*pos != ',')
+									_packet.nsp_.push_back(*pos);
+								else
+								{
+									++pos;
+									break;
+								}
+								++pos;
+							} while (pos < end);
+						}
+						//parse packet id
+						if (pos < end && isdigit(*pos))
+						{
+							std::string id;
+							do
+							{
+								id.push_back(*pos);
+								--len;
+								++pos;
+							} while (pos < end && isdigit(*pos));
+							_packet.id_ = std::strtoll(id.c_str(),0,10);
+						}
+						if (len < 0)
+							throw std::logic_error("packet len error");
+						if (len > 0)
+						{
+							_packet.playload_.append(pos, len);
+							pos += len;
+						}
 					}
 				}
-				
-				_packet.binary_ = false;
+				_packet.binary_ = binary;
 				_packet.packet_type_ = _packet_type;
 				_packet.playload_type_ = _playload_type;
 				packets.emplace_back(std::move(_packet));

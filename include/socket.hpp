@@ -1,7 +1,7 @@
 #pragma once
 namespace xsocket_io
 {
-	class session
+	class socket
 	{
 	public:
 		struct broadcast_t
@@ -18,11 +18,11 @@ namespace xsocket_io
 				}
 			}
 		private:
-			friend class session;
+			friend class socket;
 			std::string sid_;
-			std::function<std::list<session*>()> get_sessions_;
+			std::function<std::list<socket*>()> get_sessions_;
 		};
-		session(xnet::proactor_pool &ppool)
+		socket(xnet::proactor_pool &ppool)
 			:pro_pool_(ppool)
 		{
 		}
@@ -44,6 +44,7 @@ namespace xsocket_io
 			_packet.playload_type_ = detail::playload_type::e_event;
 			_packet.playload_ = obj.str();
 			_packet.binary_ = !b64_;
+			_packet.nsp_ = nsp_;
 			auto _request = polling_.lock();
 			if (_request)
 			{
@@ -68,10 +69,10 @@ namespace xsocket_io
 		}
 		broadcast_t broadcast;
 	private:
-		session(session &&sess) = delete;
-		session(session &sess) = delete;
-		session &operator = (session &&sess) = delete;
-		session &operator = (session &sess) = delete;
+		socket(socket &&sess) = delete;
+		socket(socket &sess) = delete;
+		socket &operator = (socket &&sess) = delete;
+		socket &operator = (socket &sess) = delete;
 
 		friend class xserver;
 
@@ -134,19 +135,24 @@ namespace xsocket_io
 			packets_.emplace_back(std::move(_packet));
 		}
 
-		void connect_ack()
+		void connect_ack(const std::string &nsp,
+			const std::string &playload = {}, 
+			detail::playload_type _playload_type = detail::playload_type::e_connect)
 		{
 			connect_ack_ = true;
 			auto _request = polling_.lock();
+			std::string msg;
 
 			detail::packet _packet;
 			_packet.packet_type_ = detail::packet_type::e_message;
-			_packet.playload_type_ = detail::playload_type::e_connect;
+			_packet.playload_type_ = _playload_type;
 			_packet.binary_ = !b64_;
-
+			_packet.playload_ = playload;
+			_packet.nsp_ = nsp;
 			if (_request)
 			{
-				_request->write(build_resp(encode_packet(_packet), 200, origin_, _packet.binary_));
+				msg = encode_packet(_packet);
+				_request->write(build_resp(msg, 200, origin_, _packet.binary_));
 				polling_.reset();
 				return;
 			}
@@ -154,21 +160,26 @@ namespace xsocket_io
 		}
 		void on_packet(const std::list<detail::packet> &_packet)
 		{
-			if (polling_.lock())
+			for (auto itr : _packet)
 			{
-				for (auto itr : _packet)
+				if (itr.packet_type_ == detail::packet_type::e_ping)
 				{
-					if (itr.packet_type_ == detail::packet_type::e_ping)
+					pong();
+				}
+				else if (itr.packet_type_ == detail::packet_type::e_close)
+				{
+					return on_close();
+				}
+				else if (itr.packet_type_ == detail::packet_type::e_message)
+				{
+					if (itr.playload_type_ == detail::playload_type::e_event)
 					{
-						pong();
+						if(nsp_ == itr.nsp_)
+							on_message(itr);
 					}
-					else if (itr.packet_type_ == detail::packet_type::e_close)
+					else if (itr.playload_type_ == detail::playload_type::e_connect)
 					{
-						return on_close();
-					}
-					else if (itr.packet_type_ == detail::packet_type::e_message)
-					{
-						on_message(itr);
+						nsp_ = itr.nsp_;
 					}
 				}
 			}
@@ -196,19 +207,25 @@ namespace xsocket_io
 
 		void on_polling(std::shared_ptr<request> &req)
 		{
-			polling_ = req;
 			auto method = req->method();
 			auto path = req->path();
 			auto url = req->url();
 			origin_ = req->get_entry("Origin");
 			b64_ = !!req->get_query().get("b64").size();
-			if (!connect_ack_)
+			
+			if (on_connection_)
 			{
-				connect_ack_ = true;
-				return connect_ack();
+				if (!on_connection_(nsp_, *this))
+					connect_ack(nsp_, "\"Invalid namespace\"", detail::playload_type::e_error);
+				else
+					connect_ack(nsp_);
+				on_connection_ = nullptr;
 			}
+			
+			polling_ = req;
 			if (packets_.empty())
 				return;
+
 			std::string buffer;
 			for (auto &itr : packets_)
 			{
@@ -218,10 +235,12 @@ namespace xsocket_io
 			packets_.clear();
 			req->write(build_resp(buffer, 200, origin_, !b64_));
 		}
+
 		void init()
 		{
 			broadcast.sid_ = sid_;
 			broadcast.get_sessions_ = get_sessions_;
+			connect_ack(nsp_);
 		}
 
 		void regist_event(const std::string &event_name, std::function<void(xjson::obj_t&obj)> &&handle_)
@@ -268,11 +287,14 @@ namespace xsocket_io
 		xnet::proactor_pool &pro_pool_;
 		std::function<void(const std::string &)> close_callback_;
 		std::function<void(std::shared_ptr<request>)> on_request_;
-		std::function<std::list<session*>()> get_sessions_;
+		std::function<std::list<socket*>()> get_sessions_;
 		xnet::connection conn_;
 		std::string sid_ ;
+		std::string nsp_ = "/";
 
 		std::weak_ptr<request> polling_;
 		std::map<std::string, std::string > properties_;
+
+		std::function<bool(const std::string &, socket&)> on_connection_;
 	};
 }
