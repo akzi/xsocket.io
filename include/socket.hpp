@@ -32,7 +32,7 @@ namespace xsocket_io
 		~socket()
 		{
 			auto rooms = rooms_;
-			for (auto itr : rooms)
+			for (auto &itr : rooms)
 				leave(itr);
 		}
 		template<typename Lambda>
@@ -52,10 +52,11 @@ namespace xsocket_io
 			_packet.packet_type_ = detail::packet_type::e_message;
 			_packet.playload_type_ = detail::playload_type::e_event;
 			_packet.playload_ = obj.str();
-			_packet.binary_ = !b64_;
-			_packet.nsp_ = nsp_;
-
-			send_packet(_packet);
+			
+			if(in_rooms_.empty())
+				return send_packet(_packet);
+			broadcast_room(in_rooms_, _packet);
+			in_rooms_.clear();
 		}
 		
 		std::string get_sid()
@@ -118,41 +119,57 @@ namespace xsocket_io
 			};
 			sameSite sameSite_ = sameSite::Null;
 		};
-
-		template<typename T>
-		void do_broadcast(std::set<std::string> &rooms_, const std::string &event_name, const T &msg)
+		void broadcast_room(std::set<std::string> &rooms, detail::packet &_packet)
 		{
-			if (rooms_.empty())
-			{
-				auto sockets = get_sockets();
-				for (auto itr : sockets)
-				{
-					if (itr.first == sid_)
-						continue;
-					itr.second->emit(event_name, msg);
-				}
-				return;
-			}
 			std::set<std::string> ids;
-			for (auto &itr : rooms_)
+			for (auto &itr : rooms)
 			{
-				auto sockets = get_socket_from_room_(itr);
-				if (sockets.empty())
-					continue;
-				for (auto &sock: sockets)
+				auto &sockets = get_socket_from_room_(itr);
+				for (auto &sock : sockets)
 				{
+					auto ptr = sock.second.lock();
+					if (!ptr)
+						continue;
+					if (ptr->nsp_ != nsp_)
+						continue;
 					if (ids.find(sock.first) == ids.end())
 					{
-						auto ptr = sock.second.lock();
-						if (ptr)
-							ptr->emit(event_name, msg);
+						ptr->send_packet(_packet);
 						ids.insert(sock.first);
 					}
 				}
 			}
 		}
-		void send_packet(const detail::packet &_packet)
+		template<typename T>
+		void do_broadcast(std::set<std::string> &rooms_, 
+			const std::string &event_name, const T &msg)
 		{
+			xjson::obj_t obj;
+			obj.add(event_name);
+			obj.add(msg);
+
+			detail::packet _packet;
+			_packet.packet_type_ = detail::packet_type::e_message;
+			_packet.playload_type_ = detail::playload_type::e_event;
+			_packet.playload_ = obj.str();
+
+			if (rooms_.empty())
+			{
+				auto &sockets = get_sockets_();
+				for (auto &itr : sockets)
+				{
+					if (itr.first == sid_ || itr.second->nsp_ != nsp_)
+						continue;
+					itr.second->send_packet(_packet);
+				}
+				return;
+			}
+			broadcast_room(rooms_, _packet);
+		}
+		void send_packet(detail::packet &_packet)
+		{
+			_packet.nsp_ = nsp_;
+			_packet.binary_ = !b64_;
 			auto _request = polling_.lock();
 			if (_request)
 			{
@@ -162,7 +179,9 @@ namespace xsocket_io
 			}
 			packets_.emplace_back(_packet);
 		}
-		std::string make_cookie(const std::string &key, const std::string &value, cookie_opt opt)
+		std::string make_cookie(const std::string &key, 
+			const std::string &value, 
+			cookie_opt opt)
 		{
 			std::string buffer;
 			buffer.append(key);
@@ -193,15 +212,7 @@ namespace xsocket_io
 		{
 			detail::packet _packet;
 			_packet.packet_type_ = detail::packet_type::e_pong;
-			auto _request = polling_.lock();
-			if (_request)
-			{
-				_packet.binary_ = !b64_;
-				_request->write(build_resp(encode_packet(_packet), 200, origin_, _packet.binary_));
-				polling_.reset();
-				return;
-			}
-			packets_.emplace_back(std::move(_packet));
+			send_packet(_packet);
 		}
 
 		void connect_ack(const std::string &nsp,
@@ -209,27 +220,17 @@ namespace xsocket_io
 			detail::playload_type _playload_type = detail::playload_type::e_connect)
 		{
 			connect_ack_ = true;
-			auto _request = polling_.lock();
-			std::string msg;
-
 			detail::packet _packet;
 			_packet.packet_type_ = detail::packet_type::e_message;
 			_packet.playload_type_ = _playload_type;
 			_packet.binary_ = !b64_;
 			_packet.playload_ = playload;
 			_packet.nsp_ = nsp;
-			if (_request)
-			{
-				msg = encode_packet(_packet);
-				_request->write(build_resp(msg, 200, origin_, _packet.binary_));
-				polling_.reset();
-				return;
-			}
-			packets_.push_back(_packet);
+			send_packet(_packet);
 		}
 		void on_packet(const std::list<detail::packet> &_packet)
 		{
-			for (auto itr : _packet)
+			for (auto &itr : _packet)
 			{
 				if (itr.packet_type_ == detail::packet_type::e_ping)
 				{
@@ -355,7 +356,7 @@ namespace xsocket_io
 		xnet::proactor_pool &pro_pool_;
 		std::function<void(const std::string &)> close_callback_;
 		std::function<void(std::shared_ptr<request>)> on_request_;
-		std::function<std::map<std::string, std::shared_ptr<socket>>&()> get_sessions_;
+		std::function<std::map<std::string, std::shared_ptr<socket>>&()> get_sockets_;
 		xnet::connection conn_;
 		std::string sid_ ;
 		std::string nsp_ = "/";
@@ -372,6 +373,6 @@ namespace xsocket_io
 		std::function<void(const std::string &, std::shared_ptr<socket>&)> join_room_;
 		std::function<void(const std::string &, std::shared_ptr<socket>&)> leave_room_;
 
-		std::function<std::map<const std::string&, std::weak_ptr<socket>>(const std::string &)> get_socket_from_room_;
+		std::function<std::map<std::string, std::weak_ptr<socket>>(const std::string &)> get_socket_from_room_;
 	};
 }

@@ -145,7 +145,8 @@ namespace xsocket_io
 					}
 					return _session->on_polling(req);
 				}
-				handle_request_(*req);
+				if(handle_request_)
+					handle_request_(*req);
 			}
 		}
 		void new_socket(std::shared_ptr<request> &req)
@@ -195,11 +196,11 @@ namespace xsocket_io
 			sess->on_connection_ = [this](auto &&...args) {
 				return on_connection_callback(std::forward<decltype(args)>(args)...);
 			};
-			sess->get_socket_from_room_ = [this](auto &&...args) {
-				return get_sockets_from_room(std::forward<decltype(args)>(args)...);
+			sess->get_socket_from_room_ = [this](const std::string &name) ->auto &{
+				return rooms_[name];
 			};
-			sess->get_sessions_ = [this] { 
-				return sessions_;
+			sess->get_sockets_= [this]() ->auto &{
+				return sockets_;
 			};
 			
 			sess->sid_ = sid;
@@ -209,7 +210,7 @@ namespace xsocket_io
 			do 
 			{
 				std::unique_lock<std::mutex> lock_g(session_mutex_);
-				sessions_.emplace(sid, std::move(sess));
+				sockets_.emplace(sid, std::move(sess));
 			} while (0);
 			
 		}
@@ -227,12 +228,12 @@ namespace xsocket_io
 		bool check_sid(const std::string &sid)
 		{
 			std::unique_lock<std::mutex> lock_g(session_mutex_);
-			return sessions_.find(sid) != sessions_.end();
+			return sockets_.find(sid) != sockets_.end();
 		}
 		std::shared_ptr<socket> find_session(const std::string &sid)
 		{
-			auto itr = sessions_.find(sid);
-			if (itr == sessions_.end())
+			auto itr = sockets_.find(sid);
+			if (itr == sockets_.end())
 				return nullptr;
 			return itr->second;
 		}
@@ -240,11 +241,11 @@ namespace xsocket_io
 		void socket_on_close(const std::string &sid)
 		{
 			std::shared_ptr<socket> ptr;
-			auto itr = sessions_.find(sid);
-			if (itr != sessions_.end())
+			auto itr = sockets_.find(sid);
+			if (itr != sockets_.end())
 			{
 				ptr = std::move(itr->second);
-				sessions_.erase(itr);
+				sockets_.erase(itr);
 			}
 		}
 		std::vector<std::string> get_upgrades(const std::string &transport)
@@ -269,14 +270,10 @@ namespace xsocket_io
 			auto room = rooms_[name];
 			room.erase(sock->get_sid());
 		}
-		std::map<const std::string&, std::weak_ptr<socket>> &get_sockets_from_room(const std::string &name)
-		{
-			return rooms_[name];
-		}
 		std::mutex session_mutex_;
-		std::map<std::string, std::shared_ptr<socket>> sessions_;
+		std::map<std::string, std::shared_ptr<socket>> sockets_;
 
-		std::map<std::string, std::map<const std::string&, std::weak_ptr<socket>>> rooms_;
+		std::map<std::string, std::map<std::string, std::weak_ptr<socket>>> rooms_;
 
 		std::mutex requests_mutex_;
 		std::map<int64_t, std::shared_ptr<request>> requests_;
