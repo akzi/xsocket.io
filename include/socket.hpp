@@ -30,6 +30,9 @@ namespace xsocket_io
 		}
 		~socket()
 		{
+			if (timer_id_)
+				cancel_timer_(timer_id_);
+
 			auto rooms = rooms_;
 			for (auto &itr : rooms)
 				leave(itr);
@@ -277,7 +280,7 @@ namespace xsocket_io
 			}
 			catch (const std::exception& e)
 			{
-				std::cout << e.what() << std::endl;
+				COUT_ERROR(e);
 			}
 		}
 

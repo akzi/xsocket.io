@@ -33,19 +33,24 @@
     <ClInclude Include="..\include\request.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="..\include\response.hpp">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="..\include\build_resp.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="..\include\socket.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="..\include\detail\errors.hpp">
+      <Filter>头文件\detail</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="unit_test.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="public\index.html">
+      <Filter>资源文件</Filter>
+    </None>
   </ItemGroup>
 </Project>

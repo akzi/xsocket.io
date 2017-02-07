@@ -116,15 +116,18 @@
   <ItemGroup>
     <ClInclude Include="..\include\build_resp.hpp" />
     <ClInclude Include="..\include\detail\detail.hpp" />
+    <ClInclude Include="..\include\detail\errors.hpp" />
     <ClInclude Include="..\include\detail\protoc.hpp" />
     <ClInclude Include="..\include\request.hpp" />
-    <ClInclude Include="..\include\response.hpp" />
     <ClInclude Include="..\include\socket.hpp" />
     <ClInclude Include="..\include\xserver.hpp" />
     <ClInclude Include="..\include\xsocket.io.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="unit_test.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="public\index.html" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -145,7 +145,8 @@ namespace xsocket_io
 					}
 				}
 				if(handle_request_)
-					handle_request_(*req);
+					return handle_request_(*req);
+				return req->write(build_resp("", 404, origin, false));
 			}
 		}
 		void new_socket(std::shared_ptr<request> &req)

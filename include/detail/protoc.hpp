@@ -111,7 +111,7 @@ namespace xsocket_io
 
 			#define assert_ptr()\
 			if(pos >= end) \
-				throw std::logic_error("parse packet error");
+				throw packet_error("parse packet error");
 
 			std::list<packet> packets;
 
@@ -128,7 +128,7 @@ namespace xsocket_io
 					char *ptr = nullptr;
 					len = std::strtol(pos, &ptr, 10);
 					if (!len || !ptr || (*ptr != ':'))
-						throw std::logic_error("parse packet len error");
+						throw packet_error("parse packet len error");
 					++ptr;
 					assert_ptr();
 					pos = ptr;
@@ -137,7 +137,7 @@ namespace xsocket_io
 				{
 					std::string len_str;
 					if (*pos != 0 && *pos != 1)
-						throw std::runtime_error("packet error");
+						throw packet_error("packet error");
 					_packet.is_string_ = *pos == 0;
 					++pos;
 					do
@@ -149,14 +149,14 @@ namespace xsocket_io
 
 					auto len = std::strtol(len_str.c_str(), nullptr, 10);
 					if (!len)
-						throw std::logic_error("packet len error");
+						throw packet_error("packet len error");
 					++pos;
 					assert_ptr();
 				}
 				
 				char ch = *pos - '0';
 				if (ch < e_open || ch > e_noop)
-					throw std::logic_error("parse packet type error");
+					throw packet_error("parse packet type error");
 				_packet_type = static_cast<packet_type>(ch);
 				++pos;
 				len--;
@@ -166,7 +166,7 @@ namespace xsocket_io
 					assert_ptr();
 					ch = *pos - '0';
 					if (ch < e_connect || ch > e_binary_ack)
-						throw std::logic_error("pakcet playload_type error");
+						throw packet_error("pakcet playload_type error");
 					_playload_type = static_cast<playload_type>(ch);
 					++pos;
 					if (len > 0)
@@ -202,7 +202,7 @@ namespace xsocket_io
 							_packet.id_ = std::strtoll(id.c_str(),0,10);
 						}
 						if (len < 0)
-							throw std::logic_error("packet len error");
+							throw packet_error("packet len error");
 						if (len > 0)
 						{
 							_packet.playload_.append(pos, len);

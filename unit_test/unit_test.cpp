@@ -70,7 +70,6 @@ XTEST_SUITE(main)
 		int32_t sessions = 0;
 		xsocket_io::xserver server;
 		server.bind("127.0.0.1", 3001);
-		server.start();
 		server.set_static("public/");
 
 		server.on_connection([&] (xsocket_io::socket &sock) {
@@ -114,7 +113,7 @@ XTEST_SUITE(main)
 				});
 			});
 		});
-
+		server.start();
 		getchar();
 	}
 }

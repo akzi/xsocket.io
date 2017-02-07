@@ -8,4 +8,5 @@
 #include "../../../xjson/include/xjson.hpp"
 #include "../../../xcoroutine/include/xcoroutine.hpp"
 #include "../../../xutil/include/vfs.hpp"
+#include "errors.hpp"
 #include "protoc.hpp"

@@ -333,9 +333,21 @@ namespace xsocket_io
 					if (!is_close_)
 						conn_.async_recv_some();
 				}
+				catch (packet_error &e)
+				{
+					COUT_ERROR(e);
+					write(build_resp("packet error", 400, get_entry("Origin")));
+					on_close();
+				}
+				catch (lost_connection &e)
+				{
+					COUT_ERROR(e);
+					on_close();
+				}
 				catch (std::exception &e)
 				{
-					std::cout << e.what() << std::endl;
+					COUT_ERROR(e);
+					on_close();
 				}
 			});
 			
