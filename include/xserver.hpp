@@ -18,7 +18,23 @@ namespace xsocket_io
 				xserver_.on_connection_handles_[nsp_] = handle;
 				return xserver_;
 			}
+			namespaces& in(const std::string &room)
+			{
+				rooms_.insert(room);
+				return *this;
+			}
+			namespaces& to(const std::string &room)
+			{
+				rooms_.insert(room);
+				return *this;
+			}
+			template<typename T>
+			void emit(const std::string &event, const T &msg)
+			{
+				return xserver_.do_emit(nsp_, rooms_, event, msg);
+			}
 		private:
+			std::set<std::string> rooms_;
 			std::string nsp_;
 			xserver &xserver_;
 		};
@@ -51,8 +67,44 @@ namespace xsocket_io
 		{
 			return namespaces(*this, nsp);
 		}
+		template<typename T>
+		void emit(const std::string &event, const T &msg)
+		{
+			return do_emit("/", in_rooms_, event, msg);
+		}
 	private:
+		template<typename T>
+		void do_emit(const std::string &nsp, 
+			const std::set<std::string> &rooms, 
+			const std::string &event, 
+			const T &msg)
+		{
+			xjson::obj_t obj;
+			obj.add(event);
+			obj.add(msg);
 
+			detail::packet _packet;
+			_packet.playload_ = obj.str();
+			_packet.packet_type_ = detail::e_message;
+			_packet.playload_type_ = detail::e_event;
+
+			if (rooms.size())
+			{
+				for(auto &room: rooms)
+				for (auto &itr : rooms_[nsp][room].socket_wptrs_)
+				{
+					auto sock = itr.second.lock();
+					if (sock)
+						sock->send_packet(_packet);
+				}
+				return;
+			}
+			for (auto &itr : sockets_)
+			{
+				if (nsp == "/" || itr.second->get_nsp() == nsp)
+					itr.second->send_packet(_packet);
+			}
+		}
 		int64_t uid()
 		{
 			static std::atomic_int64_t uid_ = 0;
@@ -60,8 +112,10 @@ namespace xsocket_io
 		}
 		void init()
 		{
-			proactor_pool_.regist_accept_callback([this](xnet::connection &&conn) {
-				std::shared_ptr<request> request_ptr(new request(std::move(conn)));
+			proactor_pool_
+				.regist_accept_callback([this](xnet::connection &&conn) {
+				std::shared_ptr<request> 
+					request_ptr(new request(std::move(conn)));
 				auto id = uid();
 				request_ptr->id_ = id;
 				attach_request(request_ptr);
@@ -110,7 +164,8 @@ namespace xsocket_io
 					auto _socket = find_socket(sid);
 					if (!_socket)
 					{
-						auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
+						auto msg = detail::to_json(
+							detail::error_msg::e_session_id_unknown);
 						req->write(build_resp(msg, 400, origin));
 						return;
 					}
@@ -130,7 +185,8 @@ namespace xsocket_io
 					auto _socket = find_socket(sid);
 					if (!_socket)
 					{
-						auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
+						auto msg = detail::to_json(
+							detail::error_msg::e_session_id_unknown);
 						return req->write(build_resp(msg, 400, origin));
 					}
 					return _socket->on_polling(req);
@@ -156,7 +212,8 @@ namespace xsocket_io
 						auto _socket = find_socket(sid);
 						if (!_socket)
 						{
-							auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
+							auto msg = detail::to_json(
+								detail::error_msg::e_session_id_unknown);
 							return req->write(build_resp(msg, 400, origin));
 						}
 						return _socket->handle_Upgrade(req);
@@ -209,6 +266,7 @@ namespace xsocket_io
 		void new_socket(const std::string &sid)
 		{
 			std::shared_ptr<socket> sess(new socket());
+
 			sess->close_callback_ = [this](auto &&...args) { 
 				return socket_on_close(std::forward<decltype(args)>(args)...); 
 			};
@@ -218,8 +276,15 @@ namespace xsocket_io
 			sess->on_connection_ = [this](auto &&...args) {
 				return on_connection_callback(std::forward<decltype(args)>(args)...);
 			};
-			sess->get_socket_from_room_ = [this](const std::string &name) ->auto &{
-				return rooms_[name];
+			sess->join_room_ = [this](auto &&...args) {
+				return join_room(std::forward<decltype(args)>(args)...);
+			};
+			sess->leave_room_ = [this](auto &&...args) {
+				return left_room(std::forward<decltype(args)>(args)...);
+			};
+			sess->get_socket_from_room_ = [this](const std::string &nsp,
+				const std::string &name)->auto &{
+				return rooms_[nsp][name].socket_wptrs_;
 			};
 			sess->get_sockets_= [this]() ->auto &{
 				return sockets_;
@@ -231,6 +296,7 @@ namespace xsocket_io
 			sess->cancel_timer_ = [this](std::size_t timerid) {
 				return proactor_pool_.cancel_timer(timerid);
 			};
+
 			
 			sess->sid_ = sid;
 			sess->timeout_ = ping_timeout_;
@@ -280,7 +346,7 @@ namespace xsocket_io
 		}
 		std::vector<std::string> get_upgrades(const std::string &transport)
 		{
-			return { "websocket"};
+			return { "websocket" };
 		}
 		bool on_connection_callback(const std::string &nsp, socket &sock)
 		{
@@ -291,19 +357,28 @@ namespace xsocket_io
 				return false;
 			return true;
 		}
-		void join(const std::string &name, std::shared_ptr<socket> &sock)
+		void join_room(const std::string &nsp, 
+			const std::string &name, std::shared_ptr<socket> &sock)
 		{
-			rooms_[name][sock->get_sid()] = sock;
+			rooms_[nsp][name].socket_wptrs_[sock->get_sid()] = sock;
 		}
-		void left(const std::string &name, std::shared_ptr<socket> &sock)
+		void left_room(const std::string &nsp, 
+			const std::string &name, const std::string &sid)
 		{
-			auto room = rooms_[name];
-			room.erase(sock->get_sid());
+			auto room = rooms_[name][nsp].socket_wptrs_.erase(sid);
 		}
 		std::mutex session_mutex_;
 		std::map<std::string, std::shared_ptr<socket>> sockets_;
 
-		std::map<std::string, std::map<std::string, std::weak_ptr<socket>>> rooms_;
+		typedef std::weak_ptr<socket> weak_socket_ptr;
+		struct weak_socket_ptrs
+		{
+			std::map<std::string, weak_socket_ptr> socket_wptrs_;
+		};
+		
+		typedef std::map<std::string, weak_socket_ptrs> room;
+		typedef std::map<std::string, room> rooms;
+		rooms rooms_;
 
 		std::mutex requests_mutex_;
 		std::map<int64_t, std::shared_ptr<request>> requests_;
@@ -316,5 +391,7 @@ namespace xsocket_io
 
 		uint32_t ping_interval_ = 5000;
 		uint32_t ping_timeout_ = 12000;
+
+		std::set<std::string> in_rooms_;
 	};
 }

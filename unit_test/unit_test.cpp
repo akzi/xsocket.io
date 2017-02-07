@@ -68,11 +68,12 @@ XTEST_SUITE(main)
 	{
 
 		int32_t sessions = 0;
-		xsocket_io::xserver server;
-		server.bind("127.0.0.1", 3001);
-		server.set_static("public/");
+		xsocket_io::xserver io;
+		io.bind("127.0.0.1", 3001);
+		io.set_static("public/");
 
-		server.on_connection([&] (xsocket_io::socket &sock) {
+		io.of("/chat")
+			.on_connection([&] (xsocket_io::socket &sock) {
 
 			sock.on("add user", [&](xjson::obj_t &obj) {
 				
@@ -113,7 +114,7 @@ XTEST_SUITE(main)
 				});
 			});
 		});
-		server.start();
+		io.start();
 		getchar();
 	}
 }

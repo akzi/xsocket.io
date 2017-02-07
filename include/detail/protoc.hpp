@@ -64,7 +64,7 @@ namespace xsocket_io
 			{
 				playload += std::to_string(_packet.playload_type_);
 			}
-			if (_packet.nsp_ != "/")
+			if (_packet.packet_type_ == e_message && _packet.nsp_ != "/")
 			{
 				playload += _packet.nsp_;
 				nsp = true;

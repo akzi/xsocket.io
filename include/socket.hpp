@@ -73,19 +73,23 @@ namespace xsocket_io
 		{
 			return properties_[key];
 		}
+		std::string get_nsp()
+		{
+			return nsp_;
+		}
 		void join(const std::string &room)
 		{
 			if (rooms_.find(room) == rooms_.end())
 			{
 				rooms_.insert(room);
-				join_room_(room, shared_from_this());
+				join_room_(nsp_, room, shared_from_this());
 				return;
 			}
 		}
 		void leave(const std::string &room)
 		{
 			rooms_.erase(room);
-			leave_room_(room, shared_from_this());
+			leave_room_(nsp_, room, sid_);
 		}
 		socket &in(const std::string &room)
 		{
@@ -127,7 +131,7 @@ namespace xsocket_io
 			std::set<std::string> ids;
 			for (auto &itr : rooms)
 			{
-				auto &sockets = get_socket_from_room_(itr);
+				auto &sockets = get_socket_from_room_(nsp_, itr);
 				for (auto &sock : sockets)
 				{
 					auto ptr = sock.second.lock();
@@ -204,7 +208,7 @@ namespace xsocket_io
 			for (auto &itr : packets_)
 			{
 				itr.binary_ = !b64_;
-				buffer += detail::encode_packet(itr, true);
+				buffer += detail::encode_packet(itr, upgrade_);
 			}
 			packets_.clear();
 			if (!upgrade_)
@@ -321,22 +325,34 @@ namespace xsocket_io
 			send_packet(_packet);
 		}
 
-		void connect_ack(const std::shared_ptr<request>&req,
-			const std::string &nsp,
-			const std::string &playload = {}, 
-			detail::playload_type _playload_type = detail::playload_type::e_connect)
+		void connect_ack(const std::shared_ptr<request>&req)
 		{
 			connect_ack_ = true;
 			detail::packet _packet;
 			_packet.packet_type_ = detail::packet_type::e_message;
-			_packet.playload_type_ = _playload_type;
+			_packet.playload_type_ = detail::playload_type::e_connect;
 			_packet.binary_ = !b64_;
-			_packet.playload_ = playload;
-			_packet.nsp_ = nsp;
 
-			auto msg = detail::encode_packet(_packet);
-			req->write(build_resp(msg, 200, origin_, !b64_));
-			return;
+			packets_.push_back(_packet);
+			if (!on_connection_(nsp_, *this))
+			{
+				_packet.playload_ = "\"Invalid namespace\"";
+				_packet.playload_type_ = detail::e_error;
+				on_connection_ = nullptr;
+			}
+			if (nsp_ != "/")
+			{
+				_packet.nsp_ = nsp_;
+				packets_.push_back(_packet);
+			}
+			std::string buffer;
+			for (auto &itr : packets_)
+			{
+				itr.binary_ = !b64_;
+				buffer += detail::encode_packet(itr);
+			}
+			packets_.clear();
+			return req->write(build_resp(buffer, 200, origin_, !b64_));
 		}
 		void on_packet(const std::list<detail::packet> &_packet)
 		{
@@ -413,21 +429,9 @@ namespace xsocket_io
 			origin_ = req->get_entry("Origin");
 			b64_ = !!req->get_query().get("b64").size();
 			
-			if (on_connection_)
+			if (!connect_ack_)
 			{
-				if (!connect_ack_)
-				{
-					connect_ack(req, "/");
-					if (!on_connection_(nsp_, *this))
-						connect_ack(req, 
-							nsp_,
-							"\"Invalid namespace\"",
-							detail::playload_type::e_error);
-					else if (nsp_ != "/")
-						connect_ack(req, nsp_);
-					on_connection_ = nullptr;
-					return;
-				}
+				return connect_ack(req);
 			}
 			if (upgrade_)
 				return send_noop(req);
@@ -471,7 +475,7 @@ namespace xsocket_io
 		}
 		void on_close()
 		{
-			if (!on_connection_)
+			if (connect_ack_)
 			{
 				auto itr = event_handles_.find("disconnect");
 				if (itr != event_handles_.end())
@@ -523,10 +527,11 @@ namespace xsocket_io
 		std::set<std::string> rooms_;
 		std::set<std::string> in_rooms_;
 
-		std::function<void(const std::string &, std::shared_ptr<socket>&)> join_room_;
-		std::function<void(const std::string &, std::shared_ptr<socket>&)> leave_room_;
+		std::function<void(const std::string &, const std::string &, std::shared_ptr<socket>&)> join_room_;
+		std::function<void(const std::string &, const std::string &, const std::string &)> leave_room_;
 
-		std::function<std::map<std::string, std::weak_ptr<socket>>(const std::string &)> get_socket_from_room_;
+		using sockets_in_room = std::map<std::string, std::weak_ptr<socket>>;
+		std::function<sockets_in_room& (const std::string &, const std::string &)> get_socket_from_room_;
 
 		xwebsocket::frame_parser frame_parser_;
 		xnet::connection ws_conn_;
