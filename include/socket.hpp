@@ -195,19 +195,45 @@ namespace xsocket_io
 				make_frame(msg.c_str(), msg.size());
 			websocket_conn_.async_send(std::move(frame));
 		}
+		void flush()
+		{
+			if (packets_.empty())
+				return;
+
+			std::string buffer;
+			for (auto &itr : packets_)
+			{
+				itr.binary_ = !b64_;
+				buffer += detail::encode_packet(itr, true);
+			}
+			packets_.clear();
+			if (!upgrade_)
+			{
+				auto _request = polling_.lock();
+				if (_request)
+					return _request->write(build_resp(buffer, 200, origin_, !b64_));
+				assert(false);
+			}
+			is_send_ = true;
+			xwebsocket::frame_maker _frame_maker;
+			auto frame = _frame_maker.
+				set_fin(true).
+				set_frame_type(xwebsocket::frame_type::e_text).
+				make_frame(buffer.c_str(), buffer.size());
+			websocket_conn_.async_send(std::move(frame));
+		}
 		void handle_Upgrade(const std::shared_ptr<request> &req)
 		{
 			using ccmp = xutil::functional::strcasecmper;
 			if (!ccmp()(req->get_entry("Upgrade").c_str(), "websocket"))
 				return req->write(build_resp("", 404, req->get_entry("Origin"), false));
+
+			upgrade_ = true;
 			b64_ = !!req->get_query().get("b64").size();
 			auto Sec_WebSocket_Key = req->get_entry("Sec-WebSocket-Key");
 			auto Sec_WebSocket_Version = req->get_entry("Sec-WebSocket-Version");
 			auto Sec_WebSocket_Protocol = req->get_entry("Sec-WebSocket-Protocol");
-			auto origin = req->get_entry("Origin");
 
-			auto handshake = xwebsocket::make_handshake(Sec_WebSocket_Key, Sec_WebSocket_Protocol);
-			upgrade_ = true;
 			frame_parser_.regist_frame_callback([this](std::string &&data, 
 				xwebsocket::frame_type type, bool fin) {
 				
@@ -228,27 +254,11 @@ namespace xsocket_io
 			});
 			websocket_conn_ = std::move(req->detach_connection());
 			websocket_conn_.regist_send_callback([this](std::size_t len) {
+
+				is_send_ = false;
 				if (!len)
 					return on_close();
-				
-				if (packets_.empty())
-				{
-					is_send_ = false;
-					return;
-				}
-				std::string buffer;
-				for (auto &itr : packets_)
-				{
-					itr.binary_ = !b64_;
-					buffer += detail::encode_packet(itr,true);
-				}
-				packets_.clear();
-				xwebsocket::frame_maker _frame_maker;
-				auto frame = _frame_maker.
-					set_fin(true).
-					set_frame_type(xwebsocket::frame_type::e_text).
-					make_frame(buffer.c_str(), buffer.size());
-				websocket_conn_.async_send(std::move(frame));
+				flush();
 			});
 			websocket_conn_.regist_recv_callback([this](char *data, std::size_t len) {
 				frame_parser_.do_parse(data, (uint32_t)len);
@@ -256,12 +266,14 @@ namespace xsocket_io
 					return on_close();
 				websocket_conn_.async_recv_some();
 			});
+			is_send_ = true;
+			auto handshake = xwebsocket::make_handshake(Sec_WebSocket_Key, Sec_WebSocket_Protocol);
+			websocket_conn_.async_send(std::move(handshake));
+			websocket_conn_.async_recv_some();
+
 			std::string remain = req->get_http_parser().get_string();
 			if (remain.size())
 				frame_parser_.do_parse(remain.c_str(), (uint32_t)remain.size());
-			is_send_ = true;
-			websocket_conn_.async_send(std::move(handshake));
-			websocket_conn_.async_recv_some();
 			//send noop to last polling.
 			if (polling_.lock())
 				send_noop(polling_.lock());
@@ -325,32 +337,32 @@ namespace xsocket_io
 		{
 			for (auto &itr : _packet)
 			{
-				if (itr.packet_type_ == 
-					detail::packet_type::e_ping)
+				switch (itr.packet_type_)
+				{
+				case detail::packet_type::e_ping:
 				{
 					pong(itr.playload_);
 					set_timeout();
 				}
-				else if (itr.packet_type_ == 
-					detail::packet_type::e_close)
-				{
+				case detail::packet_type::e_close:
 					return on_close();
-				}
-				else if (itr.packet_type_ == 
-					detail::packet_type::e_message)
+				case detail::packet_type::e_message:
 				{
-					if (itr.playload_type_ == 
-						detail::playload_type::e_event)
+					if (itr.playload_type_ == detail::playload_type::e_event)
 					{
-						if(nsp_ == itr.nsp_)
+						if (nsp_ == itr.nsp_)
 							on_message(itr);
 					}
-					else if (itr.playload_type_ ==
-						detail::playload_type::e_connect)
+					else if (itr.playload_type_ == detail::playload_type::e_connect)
 					{
 						nsp_ = itr.nsp_;
 					}
 				}
+				default:
+					break;
+				}
+
+					
 			}
 		}
 
@@ -406,21 +418,11 @@ namespace xsocket_io
 				}
 			}
 			if (upgrade_)
-			{
 				return send_noop(req);
-			}
-			polling_ = req;
-			if (packets_.empty())
-				return;
 
-			std::string buffer;
-			for (auto &itr : packets_)
-			{
-				itr.binary_ = !b64_;
-				buffer += detail::encode_packet(itr);
-			}
-			packets_.clear();
-			req->write(build_resp(buffer, 200, origin_, !b64_));
+			polling_ = req;
+
+			flush();
 		}
 
 		void init()
