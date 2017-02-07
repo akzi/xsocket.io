@@ -55,7 +55,7 @@ namespace xsocket_io
 			assert(false);
 			return{};
 		}
-		inline std::string encode_packet(const packet &_packet)
+		inline std::string encode_packet(const packet &_packet, bool ws = false)
 		{
 			auto nsp = false;
 			std::string playload = std::to_string(_packet.packet_type_);
@@ -81,6 +81,8 @@ namespace xsocket_io
 					playload.push_back(',');
 				playload += _packet.playload_;
 			}
+			if (ws)
+				return playload;
 
 			if (!_packet.binary_)
 			{
@@ -106,7 +108,9 @@ namespace xsocket_io
 			buffer.append(playload);
 			return buffer;
 		}
-		inline std::list<packet> decode_packet(const std::string &data,bool binary)
+
+		
+		inline std::list<packet> decode_packet(const std::string &data,bool binary, bool ws = false)
 		{
 
 			#define assert_ptr()\
@@ -122,38 +126,41 @@ namespace xsocket_io
 				packet _packet;
 				packet_type _packet_type = e_null0;
 				playload_type _playload_type = e_null1;
-				long len = 0;
-				if (!binary)
+				long len = (long)data.size();
+				if (!ws)
 				{
-					char *ptr = nullptr;
-					len = std::strtol(pos, &ptr, 10);
-					if (!len || !ptr || (*ptr != ':'))
-						throw packet_error("parse packet len error");
-					++ptr;
-					assert_ptr();
-					pos = ptr;
-				}
-				else
-				{
-					std::string len_str;
-					if (*pos != 0 && *pos != 1)
-						throw packet_error("packet error");
-					_packet.is_string_ = *pos == 0;
-					++pos;
-					do
+					if (!binary)
 					{
-						len_str.push_back(*pos);
+						char *ptr = nullptr;
+						len = std::strtol(pos, &ptr, 10);
+						if (!len || !ptr || (*ptr != ':'))
+							throw packet_error("parse packet len error");
+						++ptr;
+						assert_ptr();
+						pos = ptr;
+					}
+					else
+					{
+						std::string len_str;
+						if (*pos != 0 && *pos != 1)
+							throw packet_error("packet error");
+						_packet.is_string_ = *pos == 0;
+						++pos;
+						do
+						{
+							len_str.push_back(*pos);
+							++pos;
+							assert_ptr();
+						} while (*pos != 255);
+
+						auto len = std::strtol(len_str.c_str(), nullptr, 10);
+						if (!len)
+							throw packet_error("packet len error");
 						++pos;
 						assert_ptr();
-					} while (*pos != 255);
-
-					auto len = std::strtol(len_str.c_str(), nullptr, 10);
-					if (!len)
-						throw packet_error("packet len error");
-					++pos;
-					assert_ptr();
+					}
 				}
-				
+
 				char ch = *pos - '0';
 				if (ch < e_open || ch > e_noop)
 					throw packet_error("parse packet type error");
@@ -162,51 +169,59 @@ namespace xsocket_io
 				len--;
 				if (len > 0)
 				{
-					len--;
-					assert_ptr();
-					ch = *pos - '0';
-					if (ch < e_connect || ch > e_binary_ack)
-						throw packet_error("pakcet playload_type error");
-					_playload_type = static_cast<playload_type>(ch);
-					++pos;
-					if (len > 0)
+					if (_packet_type == e_ping)
+					{
+						_packet.playload_ = data.substr(pos - data.c_str(), len);
+						pos += len;
+					}
+					else
 					{
 						assert_ptr();
-						//parse nsp
-						if (*pos == '/')
-						{
-							_packet.nsp_.clear();
-							do
-							{
-								--len;
-								if (*pos != ',')
-									_packet.nsp_.push_back(*pos);
-								else
-								{
-									++pos;
-									break;
-								}
-								++pos;
-							} while (pos < end);
-						}
-						//parse packet id
-						if (pos < end && isdigit(*pos))
-						{
-							std::string id;
-							do
-							{
-								id.push_back(*pos);
-								--len;
-								++pos;
-							} while (pos < end && isdigit(*pos));
-							_packet.id_ = std::strtoll(id.c_str(),0,10);
-						}
-						if (len < 0)
-							throw packet_error("packet len error");
+						ch = *pos - '0';
+						if (ch < e_connect || ch > e_binary_ack)
+							throw packet_error("pakcet playload_type error");
+						_playload_type = static_cast<playload_type>(ch);
+						++pos;
+						len--;
 						if (len > 0)
 						{
-							_packet.playload_.append(pos, len);
-							pos += len;
+							assert_ptr();
+							//parse nsp
+							if (*pos == '/')
+							{
+								_packet.nsp_.clear();
+								do
+								{
+									--len;
+									if (*pos != ',')
+										_packet.nsp_.push_back(*pos);
+									else
+									{
+										++pos;
+										break;
+									}
+									++pos;
+								} while (pos < end);
+							}
+							//parse packet id
+							if (pos < end && isdigit(*pos))
+							{
+								std::string id;
+								do
+								{
+									id.push_back(*pos);
+									--len;
+									++pos;
+								} while (pos < end && isdigit(*pos));
+								_packet.id_ = std::strtoll(id.c_str(), 0, 10);
+							}
+							if (len < 0)
+								throw packet_error("packet len error");
+							if (len > 0)
+							{
+								_packet.playload_.append(pos, len);
+								pos += len;
+							}
 						}
 					}
 				}

@@ -55,7 +55,7 @@ namespace xsocket_io
 		}
 		void write(std::string &&buffer)
 		{
-			send_buffers_.push_back(std::move(buffer));
+			send_buffers_.emplace_back(std::move(buffer));
 			flush();
 		}
 		std::size_t content_length()
@@ -65,6 +65,10 @@ namespace xsocket_io
 		std::string body()
 		{
 			return get_body();
+		}
+		void close()
+		{
+			is_close_ = true;
 		}
 	private:
 		friend class detail::polling;
@@ -332,6 +336,8 @@ namespace xsocket_io
 					reset();
 					if (!is_close_)
 						conn_.async_recv_some();
+					else 
+						on_close();
 				}
 				catch (packet_error &e)
 				{
@@ -386,6 +392,14 @@ namespace xsocket_io
 			init_recv_callback();
 			init_send_callback();
 			conn_.async_recv_some();
+		}
+		xnet::connection &&detach_connection()
+		{
+			return std::move(conn_);
+		}
+		xhttper::http_parser &get_http_parser()
+		{
+			return http_parser_;
 		}
 		int64_t id_ = 0;
 		std::size_t content_length_ = (std::size_t)-1;

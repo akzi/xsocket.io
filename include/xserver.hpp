@@ -95,7 +95,7 @@ namespace xsocket_io
 			return req_ptr;
 		}
 
-		void on_request(std::shared_ptr<request> req)
+		void on_request(const std::shared_ptr<request> &req)
 		{
 			auto &query = req->get_query();
 			auto sid = query.get("sid");
@@ -107,14 +107,14 @@ namespace xsocket_io
 			{
 				if (sid.size())
 				{
-					auto _session = find_session(sid);
-					if (!_session)
+					auto _socket = find_socket(sid);
+					if (!_socket)
 					{
 						auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
 						req->write(build_resp(msg, 400, origin));
 						return;
 					}
-					_session->on_packet(detail::decode_packet(req->body(), false));
+					_socket->on_packet(detail::decode_packet(req->body(), false));
 					req->write(build_resp("ok", 200, origin, false));
 				}
 			}
@@ -127,13 +127,13 @@ namespace xsocket_io
 					{
 						return new_socket(req);
 					}
-					auto _session = find_session(sid);
-					if (!_session)
+					auto _socket = find_socket(sid);
+					if (!_socket)
 					{
 						auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
 						return req->write(build_resp(msg, 400, origin));
 					}
-					return _session->on_polling(req);
+					return _socket->on_polling(req);
 				}
 				if (url.find('?') == url.npos)
 				{
@@ -146,10 +146,27 @@ namespace xsocket_io
 				}
 				if(handle_request_)
 					return handle_request_(*req);
+				using ccmp = xutil::functional::strcasecmper;
+				auto connection = req->get_entry("Connection");
+				connection = xutil::functional::tolowerstr(connection);
+				if (connection != "keep-alive")
+				{
+					if (connection.find("upgrade") != connection.npos)
+					{
+						auto _socket = find_socket(sid);
+						if (!_socket)
+						{
+							auto msg = detail::to_json(detail::error_msg::e_session_id_unknown);
+							return req->write(build_resp(msg, 400, origin));
+						}
+						return _socket->handle_Upgrade(req);
+					}
+				}
+				
 				return req->write(build_resp("", 404, origin, false));
 			}
 		}
-		void new_socket(std::shared_ptr<request> &req)
+		void new_socket(const std::shared_ptr<request> &req)
 		{
 			using namespace detail;
 			auto sid = gen_sid();
@@ -243,7 +260,7 @@ namespace xsocket_io
 			std::unique_lock<std::mutex> lock_g(session_mutex_);
 			return sockets_.find(sid) != sockets_.end();
 		}
-		std::shared_ptr<socket> find_session(const std::string &sid)
+		std::shared_ptr<socket> find_socket(const std::string &sid)
 		{
 			auto itr = sockets_.find(sid);
 			if (itr == sockets_.end())
@@ -263,7 +280,7 @@ namespace xsocket_io
 		}
 		std::vector<std::string> get_upgrades(const std::string &transport)
 		{
-			return {};
+			return { "websocket"};
 		}
 		bool on_connection_callback(const std::string &nsp, socket &sock)
 		{

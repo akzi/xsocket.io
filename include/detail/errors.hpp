@@ -29,4 +29,5 @@ public:\
 
 DEFINE_ERROR(packet_error);
 DEFINE_ERROR(lost_connection);
+DEFINE_ERROR(Upgrade);
 

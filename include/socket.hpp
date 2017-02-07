@@ -173,14 +173,99 @@ namespace xsocket_io
 		{
 			_packet.nsp_ = nsp_;
 			_packet.binary_ = !b64_;
-			auto _request = polling_.lock();
-			if (_request)
+			if (!upgrade_)
 			{
-				auto msg = detail::encode_packet(_packet);
-				_request->write(build_resp(msg, 200, origin_, !b64_));
-				return;
+				auto _request = polling_.lock();
+				if (_request)
+				{
+					auto msg = detail::encode_packet(_packet);
+					_request->write(build_resp(msg, 200, origin_, !b64_));
+					return;
+				}
+				return packets_.emplace_back(_packet);
 			}
-			packets_.emplace_back(_packet);
+			if(packets_.size() || is_send_)
+				return packets_.emplace_back(_packet);
+			is_send_ = true;
+			xwebsocket::frame_maker _frame_maker;
+			auto msg = detail::encode_packet(_packet, true);
+			auto frame = _frame_maker.
+				set_fin(true).
+				set_frame_type(xwebsocket::frame_type::e_text).
+				make_frame(msg.c_str(), msg.size());
+			websocket_conn_.async_send(std::move(frame));
+		}
+		void handle_Upgrade(const std::shared_ptr<request> &req)
+		{
+			using ccmp = xutil::functional::strcasecmper;
+			if (!ccmp()(req->get_entry("Upgrade").c_str(), "websocket"))
+				return req->write(build_resp("", 404, req->get_entry("Origin"), false));
+			b64_ = !!req->get_query().get("b64").size();
+			auto Sec_WebSocket_Key = req->get_entry("Sec-WebSocket-Key");
+			auto Sec_WebSocket_Version = req->get_entry("Sec-WebSocket-Version");
+			auto Sec_WebSocket_Protocol = req->get_entry("Sec-WebSocket-Protocol");
+			auto origin = req->get_entry("Origin");
+
+			auto handshake = xwebsocket::make_handshake(Sec_WebSocket_Key, Sec_WebSocket_Protocol);
+			upgrade_ = true;
+			frame_parser_.regist_frame_callback([this](std::string &&data, 
+				xwebsocket::frame_type type, bool fin) {
+				
+				if (type == xwebsocket::frame_type::e_binary)
+					return xcoroutine::create([&] {
+					on_packet(detail::decode_packet(data, !b64_, true));
+				});
+				else if (type == xwebsocket::frame_type::e_text)
+				{
+					return xcoroutine::create([&] {
+						on_packet(detail::decode_packet(data, !b64_, true));
+					});
+				}
+				else if (type == xwebsocket::frame_type::e_ping)
+					return pong();
+				else if (type == xwebsocket::frame_type::e_connection_close)
+					is_close_ = true;
+			});
+			websocket_conn_ = std::move(req->detach_connection());
+			websocket_conn_.regist_send_callback([this](std::size_t len) {
+				if (!len)
+					return on_close();
+				
+				if (packets_.empty())
+				{
+					is_send_ = false;
+					return;
+				}
+				std::string buffer;
+				for (auto &itr : packets_)
+				{
+					itr.binary_ = !b64_;
+					buffer += detail::encode_packet(itr,true);
+				}
+				packets_.clear();
+				xwebsocket::frame_maker _frame_maker;
+				auto frame = _frame_maker.
+					set_fin(true).
+					set_frame_type(xwebsocket::frame_type::e_text).
+					make_frame(buffer.c_str(), buffer.size());
+				websocket_conn_.async_send(std::move(frame));
+			});
+			websocket_conn_.regist_recv_callback([this](char *data, std::size_t len) {
+				frame_parser_.do_parse(data, (uint32_t)len);
+				if (is_close_)
+					return on_close();
+				websocket_conn_.async_recv_some();
+			});
+			std::string remain = req->get_http_parser().get_string();
+			if (remain.size())
+				frame_parser_.do_parse(remain.c_str(), (uint32_t)remain.size());
+			is_send_ = true;
+			websocket_conn_.async_send(std::move(handshake));
+			websocket_conn_.async_recv_some();
+			//send noop to last polling.
+			if (polling_.lock())
+				send_noop(polling_.lock());
+			req->close();
 		}
 		std::string make_cookie(const std::string &key, 
 			const std::string &value, 
@@ -211,14 +296,16 @@ namespace xsocket_io
 			buffer.pop_back();
 			return buffer;
 		}
-		void pong()
+		void pong(const std::string &playload = {})
 		{
 			detail::packet _packet;
 			_packet.packet_type_ = detail::packet_type::e_pong;
+			_packet.playload_ = playload;
 			send_packet(_packet);
 		}
 
-		void connect_ack(const std::string &nsp,
+		void connect_ack(const std::shared_ptr<request>&req,
+			const std::string &nsp,
 			const std::string &playload = {}, 
 			detail::playload_type _playload_type = detail::playload_type::e_connect)
 		{
@@ -229,7 +316,10 @@ namespace xsocket_io
 			_packet.binary_ = !b64_;
 			_packet.playload_ = playload;
 			_packet.nsp_ = nsp;
-			send_packet(_packet);
+
+			auto msg = detail::encode_packet(_packet);
+			req->write(build_resp(msg, 200, origin_, !b64_));
+			return;
 		}
 		void on_packet(const std::list<detail::packet> &_packet)
 		{
@@ -238,7 +328,7 @@ namespace xsocket_io
 				if (itr.packet_type_ == 
 					detail::packet_type::e_ping)
 				{
-					pong();
+					pong(itr.playload_);
 					set_timeout();
 				}
 				else if (itr.packet_type_ == 
@@ -283,8 +373,15 @@ namespace xsocket_io
 				COUT_ERROR(e);
 			}
 		}
-
-		void on_polling(std::shared_ptr<request> &req)
+		void send_noop(const std::shared_ptr<request> &req)
+		{
+			detail::packet _packet;
+			_packet.packet_type_ = detail::e_noop;
+			_packet.binary_ = !b64_;
+			auto msg = detail::encode_packet(_packet);
+			return req->write(build_resp(msg, 200, origin_, !b64_));
+		}
+		void on_polling(const std::shared_ptr<request> &req)
 		{
 			auto method = req->method();
 			auto path = req->path();
@@ -294,15 +391,24 @@ namespace xsocket_io
 			
 			if (on_connection_)
 			{
-				if (!on_connection_(nsp_, *this))
-					connect_ack(nsp_, 
-						"\"Invalid namespace\"", 
-						detail::playload_type::e_error);
-				else if(nsp_ != "/")
-					connect_ack(nsp_);
-				on_connection_ = nullptr;
+				if (!connect_ack_)
+				{
+					connect_ack(req, "/");
+					if (!on_connection_(nsp_, *this))
+						connect_ack(req, 
+							nsp_,
+							"\"Invalid namespace\"",
+							detail::playload_type::e_error);
+					else if (nsp_ != "/")
+						connect_ack(req, nsp_);
+					on_connection_ = nullptr;
+					return;
+				}
 			}
-			
+			if (upgrade_)
+			{
+				return send_noop(req);
+			}
 			polling_ = req;
 			if (packets_.empty())
 				return;
@@ -320,7 +426,6 @@ namespace xsocket_io
 		void init()
 		{
 			broadcast.socket_ = this;
-			connect_ack(nsp_);
 		}
 
 		void regist_event(const std::string &event_name,
@@ -377,6 +482,7 @@ namespace xsocket_io
 		bool connect_ack_ = false;
 		bool upgrade_ = false;
 		bool b64_ = false;
+		bool is_close_ = false;
 		int32_t timeout_;
 		std::string origin_;
 
@@ -407,5 +513,9 @@ namespace xsocket_io
 		std::function<void(const std::string &, std::shared_ptr<socket>&)> leave_room_;
 
 		std::function<std::map<std::string, std::weak_ptr<socket>>(const std::string &)> get_socket_from_room_;
+
+		xwebsocket::frame_parser frame_parser_;
+		xnet::connection websocket_conn_;
+		bool is_send_ = false;
 	};
 }
