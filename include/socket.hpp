@@ -193,7 +193,7 @@ namespace xsocket_io
 				set_fin(true).
 				set_frame_type(xwebsocket::frame_type::e_text).
 				make_frame(msg.c_str(), msg.size());
-			websocket_conn_.async_send(std::move(frame));
+			ws_conn_.async_send(std::move(frame));
 		}
 		void flush()
 		{
@@ -220,7 +220,7 @@ namespace xsocket_io
 				set_fin(true).
 				set_frame_type(xwebsocket::frame_type::e_text).
 				make_frame(buffer.c_str(), buffer.size());
-			websocket_conn_.async_send(std::move(frame));
+			ws_conn_.async_send(std::move(frame));
 		}
 		void handle_Upgrade(const std::shared_ptr<request> &req)
 		{
@@ -252,24 +252,29 @@ namespace xsocket_io
 				else if (type == xwebsocket::frame_type::e_connection_close)
 					is_close_ = true;
 			});
-			websocket_conn_ = std::move(req->detach_connection());
-			websocket_conn_.regist_send_callback([this](std::size_t len) {
+			ws_conn_ = std::move(req->detach_connection());
+			ws_conn_.regist_send_callback([this](std::size_t len) {
 
-				is_send_ = false;
 				if (!len)
 					return on_close();
+				is_send_ = false;
 				flush();
 			});
-			websocket_conn_.regist_recv_callback([this](char *data, std::size_t len) {
+			ws_conn_.regist_recv_callback([this](char *data, std::size_t len) {
+
+				if(!len)
+					return on_close();
 				frame_parser_.do_parse(data, (uint32_t)len);
 				if (is_close_)
 					return on_close();
-				websocket_conn_.async_recv_some();
+				ws_conn_.async_recv_some();
 			});
+
+
 			is_send_ = true;
 			auto handshake = xwebsocket::make_handshake(Sec_WebSocket_Key, Sec_WebSocket_Protocol);
-			websocket_conn_.async_send(std::move(handshake));
-			websocket_conn_.async_recv_some();
+			ws_conn_.async_send(std::move(handshake));
+			ws_conn_.async_recv_some();
 
 			std::string remain = req->get_http_parser().get_string();
 			if (remain.size())
@@ -343,26 +348,33 @@ namespace xsocket_io
 				{
 					pong(itr.playload_);
 					set_timeout();
+					break;
 				}
 				case detail::packet_type::e_close:
-					return on_close();
+				{
+					is_close_ = true;
+					break;
+				}
 				case detail::packet_type::e_message:
 				{
-					if (itr.playload_type_ == detail::playload_type::e_event)
+					switch (itr.playload_type_)
+					{
+					case detail::playload_type::e_event:
 					{
 						if (nsp_ == itr.nsp_)
 							on_message(itr);
 					}
-					else if (itr.playload_type_ == detail::playload_type::e_connect)
+					case detail::playload_type::e_connect:
 					{
 						nsp_ = itr.nsp_;
+					}
+					default:
+						break;
 					}
 				}
 				default:
 					break;
 				}
-
-					
 			}
 		}
 
@@ -517,7 +529,7 @@ namespace xsocket_io
 		std::function<std::map<std::string, std::weak_ptr<socket>>(const std::string &)> get_socket_from_room_;
 
 		xwebsocket::frame_parser frame_parser_;
-		xnet::connection websocket_conn_;
+		xnet::connection ws_conn_;
 		bool is_send_ = false;
 	};
 }
